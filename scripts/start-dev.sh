@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -7,40 +7,22 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 echo "=== Polkadot Stack Template - Local Development ==="
 echo ""
 
-# Step 1: Build the runtime
-echo "[1/4] Building runtime..."
+# Build the runtime
+echo "[1/3] Building runtime..."
 cargo build -p stack-template-runtime --release
 
-# Step 2: Generate chain spec
-echo "[2/4] Generating chain spec..."
-WASM_PATH="$ROOT_DIR/target/release/wbuild/stack-template-runtime/stack_template_runtime.compact.compressed.wasm"
-
-if ! command -v chain-spec-builder &> /dev/null; then
-    echo "  Installing chain-spec-builder..."
-    cargo install staging-chain-spec-builder
-fi
-
-chain-spec-builder \
-    -c "$ROOT_DIR/blockchain/chain_spec.json" \
-    create \
-    -t development \
-    --relay-chain paseo-local \
+# Create the chain spec using the newly built WASM
+echo "[2/3] Generating chain spec..."
+chain-spec-builder create -t development \
+    --relay-chain paseo \
     --para-id 1000 \
-    --runtime "$WASM_PATH" \
-    named-preset development
+    --runtime "$ROOT_DIR/target/release/wbuild/stack-template-runtime/stack_template_runtime.compact.compressed.wasm" \
+    named-preset development > "$ROOT_DIR/blockchain/chain_spec.json"
 
 echo "  Chain spec written to blockchain/chain_spec.json"
 
-# Step 3: Start the node
-echo "[3/4] Starting omni-node in dev mode..."
+# Start the node
+echo "[3/3] Starting omni-node in dev mode..."
 echo "  RPC endpoint: ws://127.0.0.1:9944"
 echo ""
-echo "  Press Ctrl+C to stop."
-echo ""
-
-polkadot-omni-node \
-    --chain "$ROOT_DIR/blockchain/chain_spec.json" \
-    --dev \
-    --rpc-cors all \
-    --rpc-external \
-    --tmp
+polkadot-omni-node --chain "$ROOT_DIR/blockchain/chain_spec.json" --dev
