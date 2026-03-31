@@ -1,4 +1,5 @@
 import ContractCounterPage from "../components/ContractCounterPage";
+import { deployments } from "../config/deployments";
 
 export default function PvmContractPage() {
   return (
@@ -14,6 +15,7 @@ export default function PvmContractPage() {
       }
       accentColor="green"
       storageKey="pvm-contract-address"
+      defaultAddress={deployments.pvm ?? undefined}
     />
   );
 }

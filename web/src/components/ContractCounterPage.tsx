@@ -12,6 +12,7 @@ interface Props {
   description: ReactNode;
   accentColor: "purple" | "green";
   storageKey: string;
+  defaultAddress?: string;
 }
 
 const colorMap = {
@@ -30,10 +31,11 @@ export default function ContractCounterPage({
   description,
   accentColor,
   storageKey,
+  defaultAddress,
 }: Props) {
   const colors = colorMap[accentColor];
   const [contractAddress, setContractAddress] = useState(
-    () => localStorage.getItem(storageKey) || ""
+    () => localStorage.getItem(storageKey) || defaultAddress || ""
   );
   const [selectedAccount, setSelectedAccount] = useState(0);
   const [counterValue, setCounterValue] = useState<string | null>(null);

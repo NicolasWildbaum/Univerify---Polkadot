@@ -1,4 +1,5 @@
 import ContractCounterPage from "../components/ContractCounterPage";
+import { deployments } from "../config/deployments";
 
 export default function EvmContractPage() {
   return (
@@ -15,6 +16,7 @@ export default function EvmContractPage() {
       }
       accentColor="purple"
       storageKey="evm-contract-address"
+      defaultAddress={deployments.evm ?? undefined}
     />
   );
 }
