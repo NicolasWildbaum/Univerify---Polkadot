@@ -79,14 +79,14 @@ export default function HomePage() {
           color="text-blue-400"
         />
         <Card
-          title="EVM Counter"
-          description="Interact with the Solidity counter deployed via Frontier's pallet-evm."
+          title="EVM Counter (solc)"
+          description="Solidity counter compiled with solc, deployed to the REVM backend via standard Ethereum tooling."
           link="/evm"
           color="text-purple-400"
         />
         <Card
-          title="PVM Counter"
-          description="Interact with the ink! counter deployed via pallet-revive (PolkaVM)."
+          title="PVM Counter (resolc)"
+          description="Same Solidity counter compiled with resolc to PolkaVM bytecode, deployed via pallet-revive."
           link="/pvm"
           color="text-green-400"
         />

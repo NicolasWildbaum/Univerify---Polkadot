@@ -32,9 +32,7 @@ web/.papi/descriptors/
 web/.papi/metadata/
 
 # Hardhat
-contracts/evm/cache/
-contracts/evm/artifacts/
-contracts/evm/typechain-types/
-
-# ink! build artifacts
-contracts/ink/target/
+contracts/*/cache/
+contracts/*/artifacts/
+contracts/*/typechain-types/
+contracts/*/ignition/deployments/

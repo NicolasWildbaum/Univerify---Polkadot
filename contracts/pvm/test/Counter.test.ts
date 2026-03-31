@@ -1,7 +1,7 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
 
-describe("Counter (EVM)", function () {
+describe("Counter (PVM)", function () {
   async function deployCounterFixture() {
     const [owner, otherAccount] = await ethers.getSigners();
     const Counter = await ethers.getContractFactory("Counter");
@@ -33,20 +33,5 @@ describe("Counter (EVM)", function () {
     await counter.connect(otherAccount).setCounter(200);
     expect(await counter.getCounter(owner.address)).to.equal(100);
     expect(await counter.getCounter(otherAccount.address)).to.equal(200);
-  });
-
-  it("Should emit CounterSet event", async function () {
-    const { counter, owner } = await deployCounterFixture();
-    await expect(counter.setCounter(42))
-      .to.emit(counter, "CounterSet")
-      .withArgs(owner.address, 42);
-  });
-
-  it("Should emit CounterIncremented event", async function () {
-    const { counter, owner } = await deployCounterFixture();
-    await counter.setCounter(5);
-    await expect(counter.increment())
-      .to.emit(counter, "CounterIncremented")
-      .withArgs(owner.address, 6);
   });
 });

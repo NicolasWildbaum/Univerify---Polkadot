@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 /// @title Counter
 /// @notice A simple counter contract demonstrating the same concept as the
-///         pallet-template and ink! counter - get, set, and increment a value.
+///         pallet-template counter - get, set, and increment a value.
+///         This same Solidity source compiles to both EVM (via solc) and
+///         PVM (via resolc) bytecode.
 contract Counter {
     mapping(address => uint256) private counters;
 

@@ -1,0 +1,15 @@
+{
+  "name": "pvm-counter",
+  "version": "0.1.0",
+  "description": "PVM deployment of the Counter contract using Hardhat + resolc (Solidity to PolkaVM)",
+  "scripts": {
+    "compile": "npx hardhat compile",
+    "test": "npx hardhat test",
+    "deploy:local": "npx hardhat ignition deploy ./ignition/modules/Counter.js --network localNode",
+    "deploy:testnet": "npx hardhat ignition deploy ./ignition/modules/Counter.js --network polkadotTestnet"
+  },
+  "devDependencies": {
+    "@parity/hardhat-polkadot": "0.2.7",
+    "@parity/resolc": "1.0.0"
+  }
+}

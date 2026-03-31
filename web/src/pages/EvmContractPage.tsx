@@ -1,38 +1,55 @@
 export default function EvmContractPage() {
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-purple-400">EVM Counter</h1>
+      <h1 className="text-2xl font-bold text-purple-400">
+        EVM Counter (solc)
+      </h1>
       <p className="text-gray-400">
-        Interact with the Solidity counter contract deployed via Frontier's
-        pallet-evm. This page will use ethers.js to communicate through the
-        Ethereum JSON-RPC endpoint.
+        Interact with the Solidity counter contract compiled with{" "}
+        <code className="bg-gray-800 px-1 rounded">solc</code> and deployed to
+        the REVM backend. Uses standard Ethereum tooling (Hardhat, ethers.js).
       </p>
 
       <div className="bg-gray-900 rounded-lg p-5 border border-gray-800 space-y-4">
-        <p className="text-yellow-400 text-sm">
-          This page requires Frontier (pallet-evm) to be integrated into the
-          runtime and the Solidity counter contract to be deployed. See the{" "}
-          <code className="bg-gray-800 px-1 rounded">contracts/evm/</code>{" "}
-          directory for the contract source and deployment scripts.
-        </p>
-
         <div className="text-gray-400 text-sm space-y-2">
           <p>To deploy and interact with the EVM counter:</p>
           <ol className="list-decimal list-inside space-y-1">
             <li>
-              Start the local chain:{" "}
               <code className="bg-gray-800 px-1 rounded">
-                ./scripts/start-dev.sh
+                cd contracts/evm && npm install
               </code>
             </li>
             <li>
-              Deploy the contract:{" "}
               <code className="bg-gray-800 px-1 rounded">
-                cd contracts/evm && npm run deploy:local
+                npx hardhat compile
               </code>
             </li>
-            <li>Enter the deployed contract address below</li>
+            <li>
+              Deploy to testnet:{" "}
+              <code className="bg-gray-800 px-1 rounded">
+                npx hardhat ignition deploy ./ignition/modules/Counter.js
+                --network polkadotTestnet
+              </code>
+            </li>
           </ol>
+          <p className="mt-3">
+            Polkadot TestNet RPC:{" "}
+            <code className="bg-gray-800 px-1 rounded">
+              https://services.polkadothub-rpc.com/testnet
+            </code>{" "}
+            (Chain ID: 420420417)
+          </p>
+          <p>
+            Get testnet tokens:{" "}
+            <a
+              href="https://faucet.polkadot.io/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-pink-400 underline"
+            >
+              faucet.polkadot.io
+            </a>
+          </p>
         </div>
 
         <div>

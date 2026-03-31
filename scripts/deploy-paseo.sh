@@ -1,32 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== Deploy Contracts to Paseo ==="
+echo "=== Deploy Contracts to Polkadot TestNet ==="
 echo ""
-echo "This script deploys the Solidity and ink! counter contracts to Paseo."
+echo "Make sure you have set your private key:"
+echo "  cd contracts/evm && npx hardhat vars set PRIVATE_KEY"
+echo "  cd contracts/pvm && npx hardhat vars set PRIVATE_KEY"
+echo ""
+echo "Get testnet tokens at: https://faucet.polkadot.io/"
 echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Deploy Solidity contract
-echo "[1/2] Deploying Solidity counter to Paseo..."
-echo "  Make sure PRIVATE_KEY is set in your environment."
+# Deploy EVM contract (solc)
+echo "[1/2] Deploying Solidity counter via EVM (solc)..."
 cd "$ROOT_DIR/contracts/evm"
 npm install
-npx hardhat run scripts/deploy.ts --network paseo
+npx hardhat compile
+npx hardhat ignition deploy ./ignition/modules/Counter.js --network polkadotTestnet
 
-# Deploy ink! contract
-echo "[2/2] Deploying ink! counter to Paseo..."
-echo "  Using cargo-contract to deploy to Paseo Asset Hub."
-cd "$ROOT_DIR/contracts/ink"
-if ! command -v cargo-contract &> /dev/null; then
-    echo "  Installing cargo-contract..."
-    cargo install cargo-contract
-fi
-cargo contract build --release
-echo "  Use 'cargo contract upload' and 'cargo contract instantiate' to deploy."
-echo "  See: https://use.ink/getting-started/deploy-your-contract"
+# Deploy PVM contract (resolc)
+echo "[2/2] Deploying Solidity counter via PVM (resolc)..."
+cd "$ROOT_DIR/contracts/pvm"
+npm install
+npx hardhat compile
+npx hardhat ignition deploy ./ignition/modules/Counter.js --network polkadotTestnet
 
 echo ""
 echo "=== Deployment complete ==="

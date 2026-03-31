@@ -1,17 +1,19 @@
 import type { HardhatUserConfig } from "hardhat/config";
-import "@nomicfoundation/hardhat-toolbox";
-import "@nomicfoundation/hardhat-verify";
+import "@parity/hardhat-polkadot";
 import { vars } from "hardhat/config";
 
 const config: HardhatUserConfig = {
   solidity: "0.8.28",
+  resolc: {
+    version: "1.0.0",
+  },
   paths: {
     // Shared Solidity source
     sources: "../solidity",
   },
   networks: {
-    local: {
-      // Local node Ethereum RPC endpoint
+    localNode: {
+      // Local node Ethereum RPC endpoint (via eth-rpc adapter)
       url: "http://127.0.0.1:8545",
       accounts: [
         // Alice dev account private key
@@ -24,20 +26,8 @@ const config: HardhatUserConfig = {
       accounts: [vars.get("PRIVATE_KEY", "")].filter(Boolean),
     },
   },
-  etherscan: {
-    apiKey: {
-      polkadotTestnet: "no-api-key-needed",
-    },
-    customChains: [
-      {
-        network: "polkadotTestnet",
-        chainId: 420420417,
-        urls: {
-          apiURL: "https://blockscout-testnet.polkadot.io/api",
-          browserURL: "https://blockscout-testnet.polkadot.io/",
-        },
-      },
-    ],
+  ignition: {
+    requiredConfirmations: 1,
   },
 };
 
