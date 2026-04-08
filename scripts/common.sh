@@ -131,8 +131,12 @@ run_zombienet_foreground() {
     echo "  Zombienet dir: $ZOMBIE_DIR"
     echo "  Zombienet log: $ZOMBIE_LOG"
 
+    trap cleanup_zombienet EXIT INT TERM
+
     cd "$ROOT_DIR/blockchain"
-    exec zombienet -p native -f -l text -d "$ZOMBIE_DIR" spawn zombienet.toml
+    zombienet -p native -f -l text -d "$ZOMBIE_DIR" spawn zombienet.toml &
+    ZOMBIE_PID=$!
+    wait "$ZOMBIE_PID"
 }
 
 start_eth_rpc_background() {
@@ -149,8 +153,12 @@ start_eth_rpc_background() {
 }
 
 cleanup_zombienet() {
+    if [ -n "$ZOMBIE_DIR" ]; then
+        pkill -INT -f "$ZOMBIE_DIR" 2>/dev/null || true
+        sleep 1
+        pkill -KILL -f "$ZOMBIE_DIR" 2>/dev/null || true
+    fi
     if [ -n "$ZOMBIE_PID" ]; then
-        kill -INT "$ZOMBIE_PID" 2>/dev/null || true
         wait "$ZOMBIE_PID" 2>/dev/null || true
     fi
 }
