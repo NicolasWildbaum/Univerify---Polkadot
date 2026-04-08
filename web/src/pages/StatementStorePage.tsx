@@ -45,6 +45,64 @@ export default function StatementStorePage() {
 		return null;
 	}
 
+	function detectFileType(data: Uint8Array): { ext: string; mime: string } {
+		if (data.length >= 4) {
+			// PNG: 89 50 4E 47
+			if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47)
+				return { ext: "png", mime: "image/png" };
+			// GIF: 47 49 46 38
+			if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x38)
+				return { ext: "gif", mime: "image/gif" };
+			// PDF: 25 50 44 46
+			if (data[0] === 0x25 && data[1] === 0x50 && data[2] === 0x44 && data[3] === 0x46)
+				return { ext: "pdf", mime: "application/pdf" };
+			// ZIP: 50 4B 03 04
+			if (data[0] === 0x50 && data[1] === 0x4b && data[2] === 0x03 && data[3] === 0x04)
+				return { ext: "zip", mime: "application/zip" };
+			// WASM: 00 61 73 6D
+			if (data[0] === 0x00 && data[1] === 0x61 && data[2] === 0x73 && data[3] === 0x6d)
+				return { ext: "wasm", mime: "application/wasm" };
+		}
+		if (data.length >= 3) {
+			// JPEG: FF D8 FF
+			if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff)
+				return { ext: "jpg", mime: "image/jpeg" };
+		}
+		// WebP: RIFF....WEBP
+		if (
+			data.length >= 12 &&
+			data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46 &&
+			data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50
+		)
+			return { ext: "webp", mime: "image/webp" };
+
+		// Text-based detection
+		const text = tryDecodeUtf8(data);
+		if (text !== null) {
+			const trimmed = text.trimStart();
+			if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+				try {
+					JSON.parse(trimmed);
+					return { ext: "json", mime: "application/json" };
+				} catch { /* not valid JSON */ }
+			}
+			return { ext: "txt", mime: "text/plain" };
+		}
+
+		return { ext: "bin", mime: "application/octet-stream" };
+	}
+
+	function downloadData(data: Uint8Array, hash: string) {
+		const { ext, mime } = detectFileType(data);
+		const blob = new Blob([data], { type: mime });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = `statement-${hash.slice(2, 10)}.${ext}`;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
 	if (available === null) {
 		return (
 			<div className="space-y-6">
@@ -164,6 +222,14 @@ export default function StatementStorePage() {
 											? textPreview.slice(0, 500) + "..."
 											: textPreview}
 									</pre>
+								)}
+								{stmt.data && (
+									<button
+										onClick={() => downloadData(stmt.data!, stmt.hash)}
+										className="mt-1 px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300"
+									>
+										Download
+									</button>
 								)}
 							</div>
 						);
