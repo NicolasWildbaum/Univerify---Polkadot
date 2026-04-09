@@ -93,7 +93,7 @@ cargo install --git https://github.com/paritytech/polkadot-sdk --tag polkadot-st
 
 ### Ethereum RPC Adapter (eth-rpc)
 
-Bridges Ethereum JSON-RPC (port 8545) to the Substrate node, enabling Hardhat/ethers.js/MetaMask to interact with pallet-revive contracts.
+Bridges Ethereum JSON-RPC (default port `8545`) to the Substrate node, enabling Hardhat/ethers.js/MetaMask to interact with pallet-revive contracts.
 
 Download from the same release:
 
@@ -255,11 +255,19 @@ The repo keeps `web/src/config/deployments.ts` as a checked-in stub so the front
 
 This builds the runtime, generates a chain spec, starts the local Zombienet relay-chain + collator network, starts the eth-rpc adapter, compiles and deploys both contracts, and starts the frontend — all in one command.
 
-- **Substrate RPC**: `ws://127.0.0.1:9944`
-- **Ethereum RPC**: `http://127.0.0.1:8545` (via eth-rpc adapter)
-- **Frontend**: `http://localhost:5173`
+- **Substrate RPC**: `ws://127.0.0.1:9944` by default
+- **Ethereum RPC**: `http://127.0.0.1:8545` by default (via eth-rpc adapter)
+- **Frontend**: `http://127.0.0.1:5173` by default
 
 Press Ctrl+C to stop everything.
+
+To run a second local stack or move the defaults, use:
+
+```bash
+STACK_PORT_OFFSET=100 ./scripts/start-all.sh
+```
+
+That shifts the main local endpoints to `10044`, `8645`, and `5273`, and the scripts also regenerate the matching Zombienet, `eth-rpc`, CLI, and frontend settings automatically. For explicit control, set `STACK_SUBSTRATE_RPC_PORT`, `STACK_ETH_RPC_PORT`, and `STACK_FRONTEND_PORT`.
 
 ### Running Components Individually
 
@@ -291,6 +299,8 @@ cargo run -p stack-cli -- contract create-claim evm --file ./README.md
 ```
 
 The CLI is part of the Rust workspace, so `cargo run -p stack-cli -- ...` works from the repo root.
+
+When you launch the local stack through the scripts, the CLI also picks up `SUBSTRATE_RPC_WS` and `ETH_RPC_HTTP` from the environment automatically. You can still pass `--url` and `--eth-rpc-url` explicitly when you want to target another chain.
 
 ## Deploying to Polkadot TestNet
 

@@ -94,7 +94,7 @@ Or deploy contracts manually against a running node:
 ./scripts/start-dev.sh
 
 # Start eth-rpc against the local node (terminal 2)
-eth-rpc --node-rpc-url ws://127.0.0.1:9944 --rpc-cors all
+eth-rpc --node-rpc-url "${SUBSTRATE_RPC_WS:-ws://127.0.0.1:9944}" --rpc-port "${STACK_ETH_RPC_PORT:-8545}" --rpc-cors all
 
 # Deploy contracts (terminal 3)
 cd contracts/evm && npm install && npm run deploy:local
@@ -132,10 +132,12 @@ TestNet details:
 ```
 
 This builds the runtime WASM, generates a chain spec, and starts the lightweight solo-node path. Endpoints:
-- **Substrate RPC**: `ws://127.0.0.1:9944`
-- **Ethereum RPC**: `http://127.0.0.1:8545` (requires `eth-rpc` running separately)
+- **Substrate RPC**: `ws://127.0.0.1:9944` by default
+- **Ethereum RPC**: `http://127.0.0.1:8545` by default (requires `eth-rpc` running separately)
 
 This solo-node mode is intentionally optimized for quick runtime and contract iteration. On the omni-node release paired with `polkadot-sdk stable2512-3`, Statement Store is **not** available in dev mode, so use the relay-backed scripts (`./scripts/start-all.sh` or `./scripts/start-local.sh`) when you need the Statement Store example working locally.
+
+All local scripts also support `STACK_PORT_OFFSET` plus explicit `STACK_SUBSTRATE_RPC_PORT`, `STACK_ETH_RPC_PORT`, and `STACK_FRONTEND_PORT` overrides. When you use those scripts, the frontend dev server, CLI defaults, Hardhat local network, and PAPI refresh all follow the active port settings automatically.
 
 ### Local node flags
 
@@ -196,6 +198,12 @@ The Docker setup mirrors the lightweight solo-node mode. It uses `--dev-block-ti
 ```
 
 Use `./scripts/start-all.sh` if you want the relay-backed network plus contract deployment and frontend startup in one command.
+
+If you need a second relay-backed stack at the same time:
+
+```bash
+STACK_PORT_OFFSET=100 ./scripts/start-local.sh
+```
 
 ## Bulletin Chain (IPFS Upload)
 

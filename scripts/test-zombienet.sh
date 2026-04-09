@@ -19,8 +19,8 @@ trap cleanup EXIT INT TERM
 
 TMP_DIR="$(mktemp -d)"
 CLI="cargo run -q -p stack-cli --"
-WS_URL="ws://127.0.0.1:9944"
-ETH_URL="http://127.0.0.1:8545"
+WS_URL="$SUBSTRATE_RPC_WS"
+ETH_URL="$ETH_RPC_HTTP"
 
 PASSED=0
 FAILED=0
@@ -48,6 +48,8 @@ check() {
 }
 
 echo "=== Polkadot Stack Template - Zombienet E2E Test ==="
+echo ""
+log_info "Testing against $WS_URL and $ETH_URL"
 echo ""
 
 # -----------------------------------------------------------------------

@@ -13,7 +13,7 @@ subxt = { workspace = true }
 subxt-signer = { workspace = true }
 tokio = { workspace = true }
 alloy = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 hex = "0.4"

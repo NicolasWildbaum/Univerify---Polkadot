@@ -9,17 +9,43 @@ COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$COMMON_DIR/.." && pwd)"
 CHAIN_SPEC="$ROOT_DIR/blockchain/chain_spec.json"
 RUNTIME_WASM="$ROOT_DIR/target/release/wbuild/stack-template-runtime/stack_template_runtime.compact.compressed.wasm"
-SUBSTRATE_RPC_HTTP="${SUBSTRATE_RPC_HTTP:-http://127.0.0.1:9944}"
-SUBSTRATE_RPC_WS="${SUBSTRATE_RPC_WS:-ws://127.0.0.1:9944}"
-ETH_RPC_HTTP="${ETH_RPC_HTTP:-http://127.0.0.1:8545}"
+STACK_PORT_OFFSET="${STACK_PORT_OFFSET:-0}"
+STACK_SUBSTRATE_RPC_PORT="${STACK_SUBSTRATE_RPC_PORT:-$((9944 + STACK_PORT_OFFSET))}"
+STACK_ETH_RPC_PORT="${STACK_ETH_RPC_PORT:-$((8545 + STACK_PORT_OFFSET))}"
+STACK_FRONTEND_PORT="${STACK_FRONTEND_PORT:-$((5173 + STACK_PORT_OFFSET))}"
+STACK_COLLATOR_INTERNAL_RPC_PORT="$((9933 + STACK_PORT_OFFSET))"
+STACK_COLLATOR_P2P_PORT="$((30333 + STACK_PORT_OFFSET))"
+STACK_COLLATOR_PROMETHEUS_PORT="$((9615 + STACK_PORT_OFFSET))"
+STACK_RELAY_ALICE_RPC_PORT="$((9949 + STACK_PORT_OFFSET))"
+STACK_RELAY_ALICE_WS_PORT="$((9950 + STACK_PORT_OFFSET))"
+STACK_RELAY_ALICE_P2P_PORT="$((30335 + STACK_PORT_OFFSET))"
+STACK_RELAY_ALICE_PROMETHEUS_PORT="$((9617 + STACK_PORT_OFFSET))"
+STACK_RELAY_BOB_RPC_PORT="$((9951 + STACK_PORT_OFFSET))"
+STACK_RELAY_BOB_WS_PORT="$((9952 + STACK_PORT_OFFSET))"
+STACK_RELAY_BOB_P2P_PORT="$((30336 + STACK_PORT_OFFSET))"
+STACK_RELAY_BOB_PROMETHEUS_PORT="$((9618 + STACK_PORT_OFFSET))"
+SUBSTRATE_RPC_HTTP="${SUBSTRATE_RPC_HTTP:-http://127.0.0.1:${STACK_SUBSTRATE_RPC_PORT}}"
+SUBSTRATE_RPC_WS="${SUBSTRATE_RPC_WS:-ws://127.0.0.1:${STACK_SUBSTRATE_RPC_PORT}}"
+ETH_RPC_HTTP="${ETH_RPC_HTTP:-http://127.0.0.1:${STACK_ETH_RPC_PORT}}"
+FRONTEND_URL="${FRONTEND_URL:-http://127.0.0.1:${STACK_FRONTEND_PORT}}"
 
 ZOMBIE_DIR="${ZOMBIE_DIR:-}"
 ZOMBIE_LOG="${ZOMBIE_LOG:-}"
 ZOMBIE_PID="${ZOMBIE_PID:-}"
+ZOMBIE_CONFIG="${ZOMBIE_CONFIG:-}"
 NODE_DIR="${NODE_DIR:-}"
 NODE_LOG="${NODE_LOG:-}"
 NODE_PID="${NODE_PID:-}"
 ETH_RPC_PID="${ETH_RPC_PID:-}"
+
+export STACK_PORT_OFFSET
+export STACK_SUBSTRATE_RPC_PORT
+export STACK_ETH_RPC_PORT
+export STACK_FRONTEND_PORT
+export SUBSTRATE_RPC_HTTP
+export SUBSTRATE_RPC_WS
+export ETH_RPC_HTTP
+export FRONTEND_URL
 
 log_info() {
     echo "INFO: $*"
@@ -72,6 +98,97 @@ require_port_free() {
         log_info "Stop the process above or choose a different port before retrying."
         exit 1
     fi
+}
+
+require_ports_free() {
+    local port
+    for port in "$@"; do
+        require_port_free "$port"
+    done
+}
+
+require_distinct_ports() {
+    local seen="|"
+    local label
+    local port
+
+    while [ "$#" -gt 1 ]; do
+        label="$1"
+        port="$2"
+        shift 2
+
+        if [[ "$seen" == *"|$port|"* ]]; then
+            log_error "Port assignment conflict detected for $label ($port)."
+            log_info "Adjust STACK_PORT_OFFSET or the explicit STACK_*_PORT overrides and retry."
+            exit 1
+        fi
+
+        seen="${seen}${port}|"
+    done
+}
+
+validate_zombienet_ports() {
+    require_distinct_ports \
+        "Substrate RPC" "$STACK_SUBSTRATE_RPC_PORT" \
+        "Relay Alice RPC" "$STACK_RELAY_ALICE_RPC_PORT" \
+        "Relay Alice WS" "$STACK_RELAY_ALICE_WS_PORT" \
+        "Relay Alice P2P" "$STACK_RELAY_ALICE_P2P_PORT" \
+        "Relay Alice Prometheus" "$STACK_RELAY_ALICE_PROMETHEUS_PORT" \
+        "Relay Bob RPC" "$STACK_RELAY_BOB_RPC_PORT" \
+        "Relay Bob WS" "$STACK_RELAY_BOB_WS_PORT" \
+        "Relay Bob P2P" "$STACK_RELAY_BOB_P2P_PORT" \
+        "Relay Bob Prometheus" "$STACK_RELAY_BOB_PROMETHEUS_PORT" \
+        "Collator internal RPC" "$STACK_COLLATOR_INTERNAL_RPC_PORT" \
+        "Collator P2P" "$STACK_COLLATOR_P2P_PORT" \
+        "Collator Prometheus" "$STACK_COLLATOR_PROMETHEUS_PORT"
+
+    require_ports_free \
+        "$STACK_SUBSTRATE_RPC_PORT" \
+        "$STACK_RELAY_ALICE_RPC_PORT" \
+        "$STACK_RELAY_ALICE_WS_PORT" \
+        "$STACK_RELAY_ALICE_P2P_PORT" \
+        "$STACK_RELAY_ALICE_PROMETHEUS_PORT" \
+        "$STACK_RELAY_BOB_RPC_PORT" \
+        "$STACK_RELAY_BOB_WS_PORT" \
+        "$STACK_RELAY_BOB_P2P_PORT" \
+        "$STACK_RELAY_BOB_PROMETHEUS_PORT" \
+        "$STACK_COLLATOR_INTERNAL_RPC_PORT" \
+        "$STACK_COLLATOR_P2P_PORT" \
+        "$STACK_COLLATOR_PROMETHEUS_PORT"
+}
+
+validate_full_stack_ports() {
+    require_distinct_ports \
+        "Substrate RPC" "$STACK_SUBSTRATE_RPC_PORT" \
+        "Ethereum RPC" "$STACK_ETH_RPC_PORT" \
+        "Frontend" "$STACK_FRONTEND_PORT" \
+        "Relay Alice RPC" "$STACK_RELAY_ALICE_RPC_PORT" \
+        "Relay Alice WS" "$STACK_RELAY_ALICE_WS_PORT" \
+        "Relay Alice P2P" "$STACK_RELAY_ALICE_P2P_PORT" \
+        "Relay Alice Prometheus" "$STACK_RELAY_ALICE_PROMETHEUS_PORT" \
+        "Relay Bob RPC" "$STACK_RELAY_BOB_RPC_PORT" \
+        "Relay Bob WS" "$STACK_RELAY_BOB_WS_PORT" \
+        "Relay Bob P2P" "$STACK_RELAY_BOB_P2P_PORT" \
+        "Relay Bob Prometheus" "$STACK_RELAY_BOB_PROMETHEUS_PORT" \
+        "Collator internal RPC" "$STACK_COLLATOR_INTERNAL_RPC_PORT" \
+        "Collator P2P" "$STACK_COLLATOR_P2P_PORT" \
+        "Collator Prometheus" "$STACK_COLLATOR_PROMETHEUS_PORT"
+
+    require_ports_free \
+        "$STACK_SUBSTRATE_RPC_PORT" \
+        "$STACK_ETH_RPC_PORT" \
+        "$STACK_FRONTEND_PORT" \
+        "$STACK_RELAY_ALICE_RPC_PORT" \
+        "$STACK_RELAY_ALICE_WS_PORT" \
+        "$STACK_RELAY_ALICE_P2P_PORT" \
+        "$STACK_RELAY_ALICE_PROMETHEUS_PORT" \
+        "$STACK_RELAY_BOB_RPC_PORT" \
+        "$STACK_RELAY_BOB_WS_PORT" \
+        "$STACK_RELAY_BOB_P2P_PORT" \
+        "$STACK_RELAY_BOB_PROMETHEUS_PORT" \
+        "$STACK_COLLATOR_INTERNAL_RPC_PORT" \
+        "$STACK_COLLATOR_P2P_PORT" \
+        "$STACK_COLLATOR_PROMETHEUS_PORT"
 }
 
 build_runtime() {
@@ -210,28 +327,106 @@ wait_for_eth_rpc() {
     return 1
 }
 
+write_zombienet_config() {
+    local config_path="$1"
+
+    cat >"$config_path" <<EOF
+[settings]
+timeout = 1000
+
+[relaychain]
+chain = "rococo-local"
+default_command = "polkadot"
+
+  [[relaychain.nodes]]
+  name = "alice"
+  validator = true
+  ws_port = $STACK_RELAY_ALICE_WS_PORT
+  rpc_port = $STACK_RELAY_ALICE_RPC_PORT
+  p2p_port = $STACK_RELAY_ALICE_P2P_PORT
+  prometheus_port = $STACK_RELAY_ALICE_PROMETHEUS_PORT
+
+  [[relaychain.nodes]]
+  name = "bob"
+  validator = true
+  ws_port = $STACK_RELAY_BOB_WS_PORT
+  rpc_port = $STACK_RELAY_BOB_RPC_PORT
+  p2p_port = $STACK_RELAY_BOB_P2P_PORT
+  prometheus_port = $STACK_RELAY_BOB_PROMETHEUS_PORT
+
+[[parachains]]
+id = 1000
+chain = "./chain_spec.json"
+cumulus_based = true
+
+  [[parachains.collators]]
+  name = "collator-01"
+  validator = true
+  ws_port = $STACK_SUBSTRATE_RPC_PORT
+  rpc_port = $STACK_COLLATOR_INTERNAL_RPC_PORT
+  p2p_port = $STACK_COLLATOR_P2P_PORT
+  prometheus_port = $STACK_COLLATOR_PROMETHEUS_PORT
+  command = "polkadot-omni-node"
+  args = ["--enable-statement-store"]
+EOF
+}
+
+write_papi_config() {
+    local output_path="$1"
+
+    node -e '
+const fs = require("fs");
+const [inputPath, outputPath, wsUrl] = process.argv.slice(1);
+const config = JSON.parse(fs.readFileSync(inputPath, "utf8"));
+config.entries.stack_template.wsUrl = wsUrl;
+fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
+' "$ROOT_DIR/web/.papi/polkadot-api.json" "$output_path" "$SUBSTRATE_RPC_WS"
+}
+
+update_papi_descriptors() {
+    require_command node
+
+    local papi_config
+    papi_config="$(mktemp "$ROOT_DIR/web/papi.local.XXXXXX.json")"
+    write_papi_config "$papi_config"
+
+    npm run update-types -- --config "$papi_config"
+    npm run codegen -- --config "$papi_config"
+
+    rm -f "$papi_config"
+}
+
+export_frontend_runtime_env() {
+    export VITE_LOCAL_WS_URL="$SUBSTRATE_RPC_WS"
+    export VITE_LOCAL_ETH_RPC_URL="$ETH_RPC_HTTP"
+}
+
 start_zombienet_background() {
     require_command zombienet
     require_command polkadot
     require_command polkadot-omni-node
-    require_port_free 9944
+    validate_zombienet_ports
 
     ZOMBIE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/polkadot-stack-zombienet.XXXXXX")"
     ZOMBIE_LOG="$ZOMBIE_DIR/zombienet.log"
+    ZOMBIE_CONFIG="$ZOMBIE_DIR/zombienet.toml"
+    cp "$CHAIN_SPEC" "$ZOMBIE_DIR/chain_spec.json"
+    write_zombienet_config "$ZOMBIE_CONFIG"
 
     (
-        cd "$ROOT_DIR/blockchain"
+        cd "$ZOMBIE_DIR"
         zombienet -p native -f -l text -d "$ZOMBIE_DIR" spawn zombienet.toml >"$ZOMBIE_LOG" 2>&1
     ) &
     ZOMBIE_PID=$!
 
     log_info "Zombienet data dir: $ZOMBIE_DIR"
+    log_info "Zombienet config: $ZOMBIE_CONFIG"
     log_info "Zombienet log: $ZOMBIE_LOG"
 }
 
 start_local_node_background() {
     require_command polkadot-omni-node
-    require_port_free 9944
+    require_port_free "$STACK_SUBSTRATE_RPC_PORT"
 
     NODE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/polkadot-stack-node.XXXXXX")"
     NODE_LOG="$NODE_DIR/node.log"
@@ -245,7 +440,7 @@ start_local_node_background() {
         --no-prometheus \
         --unsafe-force-node-key-generation \
         --rpc-cors all \
-        --rpc-port 9944 \
+        --rpc-port "$STACK_SUBSTRATE_RPC_PORT" \
         -- >"$NODE_LOG" 2>&1 &
     NODE_PID=$!
 
@@ -254,7 +449,7 @@ start_local_node_background() {
 
 run_local_node_foreground() {
     require_command polkadot-omni-node
-    require_port_free 9944
+    require_port_free "$STACK_SUBSTRATE_RPC_PORT"
 
     polkadot-omni-node \
         --chain "$CHAIN_SPEC" \
@@ -265,7 +460,7 @@ run_local_node_foreground() {
         --no-prometheus \
         --unsafe-force-node-key-generation \
         --rpc-cors all \
-        --rpc-port 9944 \
+        --rpc-port "$STACK_SUBSTRATE_RPC_PORT" \
         --
 }
 
@@ -273,17 +468,21 @@ run_zombienet_foreground() {
     require_command zombienet
     require_command polkadot
     require_command polkadot-omni-node
-    require_port_free 9944
+    validate_zombienet_ports
 
     ZOMBIE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/polkadot-stack-zombienet.XXXXXX")"
     ZOMBIE_LOG="$ZOMBIE_DIR/zombienet.log"
+    ZOMBIE_CONFIG="$ZOMBIE_DIR/zombienet.toml"
+    cp "$CHAIN_SPEC" "$ZOMBIE_DIR/chain_spec.json"
+    write_zombienet_config "$ZOMBIE_CONFIG"
 
     log_info "Zombienet data dir: $ZOMBIE_DIR"
+    log_info "Zombienet config: $ZOMBIE_CONFIG"
     log_info "Zombienet log: $ZOMBIE_LOG"
 
     trap cleanup_zombienet EXIT INT TERM
 
-    cd "$ROOT_DIR/blockchain"
+    cd "$ZOMBIE_DIR"
     zombienet -p native -f -l text -d "$ZOMBIE_DIR" spawn zombienet.toml &
     ZOMBIE_PID=$!
     wait "$ZOMBIE_PID"
@@ -291,7 +490,7 @@ run_zombienet_foreground() {
 
 start_eth_rpc_background() {
     require_command eth-rpc
-    require_port_free 8545
+    require_port_free "$STACK_ETH_RPC_PORT"
 
     local eth_rpc_log
     local eth_rpc_dir
@@ -305,6 +504,7 @@ start_eth_rpc_background() {
 
     eth-rpc \
         --node-rpc-url "$SUBSTRATE_RPC_WS" \
+        --rpc-port "$STACK_ETH_RPC_PORT" \
         --no-prometheus \
         --rpc-cors all \
         -d "$eth_rpc_dir" >"$eth_rpc_log" 2>&1 &

@@ -28,9 +28,12 @@ echo ""
 log_info "This is the recommended one-command path."
 log_info "It uses Zombienet (relay chain + parachain) so all examples work,"
 log_info "including Statement Store."
+log_info "Override ports with STACK_PORT_OFFSET or STACK_*_PORT environment variables."
 log_info "First run can take 5-10 minutes because it installs npm dependencies,"
 log_info "compiles contracts, and waits for the relay-backed network to come up."
 echo ""
+
+validate_full_stack_ports
 
 echo "[1/8] Building runtime..."
 build_runtime
@@ -71,23 +74,23 @@ echo "[8/8] Starting frontend..."
 cd "$ROOT_DIR/web"
 npm install
 
-if curl -s -o /dev/null http://127.0.0.1:9944 2>/dev/null; then
+if curl -s -o /dev/null "$SUBSTRATE_RPC_HTTP" 2>/dev/null; then
     log_info "Updating PAPI descriptors..."
-    npm run update-types
-    npm run codegen
+    update_papi_descriptors
 fi
 
-npm run dev &
+export_frontend_runtime_env
+npm run dev -- --host 127.0.0.1 --port "$STACK_FRONTEND_PORT" &
 FRONTEND_PID=$!
-log_info "Frontend starting at http://localhost:5173"
+log_info "Frontend starting at $FRONTEND_URL"
 
 cd "$ROOT_DIR"
 
 echo ""
 echo "=== Full local stack running ==="
-log_info "Substrate RPC: ws://127.0.0.1:9944"
-log_info "Ethereum RPC:  http://127.0.0.1:8545"
-log_info "Frontend:      http://localhost:5173"
+log_info "Substrate RPC: $SUBSTRATE_RPC_WS"
+log_info "Ethereum RPC:  $ETH_RPC_HTTP"
+log_info "Frontend:      $FRONTEND_URL"
 log_info "Zombienet dir: $ZOMBIE_DIR"
 echo ""
 log_info "Included examples: PoE pallet, EVM contract, PVM contract, Statement Store, Bulletin upload"

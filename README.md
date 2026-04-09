@@ -70,7 +70,7 @@ A Rust CLI tool using [subxt](https://github.com/parity-tech/subxt) and [alloy](
 - [`.github/workflows/deploy-frontend.yml`](.github/workflows/deploy-frontend.yml) - Optional manual CI deploy to IPFS + DotNS
 - [`.github/workflows/deploy-github-pages.yml`](.github/workflows/deploy-github-pages.yml) - CI deploy to GitHub Pages
 - [`blockchain/Dockerfile`](blockchain/Dockerfile) - Docker image using polkadot-omni-node
-- [`blockchain/zombienet.toml`](blockchain/zombienet.toml) - Zombienet config for multi-node testing
+- [`blockchain/zombienet.toml`](blockchain/zombienet.toml) - Example Zombienet config; local scripts generate a temp config from the active port settings
 
 ## Quick Start
 
@@ -95,10 +95,21 @@ The repo includes [`.nvmrc`](.nvmrc) and `engines` fields in the JavaScript proj
 ./scripts/start-all.sh
 # Substrate RPC: ws://127.0.0.1:9944
 # Ethereum RPC:  http://127.0.0.1:8545
-# Frontend:      http://localhost:5173
+# Frontend:      http://127.0.0.1:5173
 ```
 
 `start-all.sh` is the recommended full-feature local path. It uses Zombienet under the hood so the Statement Store example works on `polkadot-sdk stable2512-3`.
+
+Want a second local stack or different ports? The local scripts coordinate the chain, `eth-rpc`, CLI, contract tooling, PAPI refresh, and frontend from shared env vars:
+
+```bash
+STACK_PORT_OFFSET=100 ./scripts/start-all.sh
+# Substrate RPC: ws://127.0.0.1:10044
+# Ethereum RPC:  http://127.0.0.1:8645
+# Frontend:      http://127.0.0.1:5273
+```
+
+Use `STACK_SUBSTRATE_RPC_PORT`, `STACK_ETH_RPC_PORT`, and `STACK_FRONTEND_PORT` if you want explicit per-service overrides instead of a shared offset.
 
 Or run components individually:
 
@@ -120,11 +131,11 @@ cargo run -p stack-cli -- chain statement-submit --file ./README.md --signer ali
 cargo run -p stack-cli -- chain statement-dump
 ```
 
-The solo-node dev script (`start-dev.sh`) generates a local chain spec, then starts a single local omni-node on `ws://127.0.0.1:9944` for the fastest runtime/pallet loop. On stable2512-3 it does **not** expose Statement Store RPCs because omni-node dev mode drops the statement-store wiring. Use `./scripts/start-all.sh` when you want the full local stack, or `./scripts/start-local.sh` when you specifically need the relay-backed network.
+The solo-node dev script (`start-dev.sh`) generates a local chain spec, then starts a single local omni-node on `ws://127.0.0.1:9944` by default for the fastest runtime/pallet loop. On stable2512-3 it does **not** expose Statement Store RPCs because omni-node dev mode drops the statement-store wiring. Use `./scripts/start-all.sh` when you want the full local stack, or `./scripts/start-local.sh` when you specifically need the relay-backed network.
 
 The frontend keeps `deployments.json` and `web/src/config/deployments.ts` as checked-in stubs. Deploy scripts update both files automatically after a successful contract deployment.
 
-If you want explicit build-time defaults for hosted frontends, copy [`web/.env.example`](web/.env.example) to `web/.env.local` and set `VITE_WS_URL` / `VITE_ETH_RPC_URL`.
+If you want explicit build-time defaults for hosted frontends, copy [`web/.env.example`](web/.env.example) to `web/.env.local` and set `VITE_WS_URL` / `VITE_ETH_RPC_URL`. For local scripted development, `start-all.sh` and `start-frontend.sh` export `VITE_LOCAL_WS_URL` / `VITE_LOCAL_ETH_RPC_URL` automatically so the browser follows the active stack ports.
 
 ### Deploy contracts
 
@@ -134,7 +145,7 @@ If you want explicit build-time defaults for hosted frontends, copy [`web/.env.e
 
 # Or, against a manually started local node:
 # 1) ./scripts/start-dev.sh
-# 2) eth-rpc --node-rpc-url ws://127.0.0.1:9944 --rpc-cors all
+# 2) eth-rpc --node-rpc-url "${SUBSTRATE_RPC_WS:-ws://127.0.0.1:9944}" --rpc-port "${STACK_ETH_RPC_PORT:-8545}" --rpc-cors all
 # 3) deploy the contracts
 cd contracts/evm && npm install && npm run deploy:local
 cd contracts/pvm && npm install && npm run deploy:local

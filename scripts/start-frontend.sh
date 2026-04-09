@@ -3,28 +3,33 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/common.sh"
 
 echo "=== Polkadot Stack Template - Frontend ==="
 echo ""
-echo "INFO: This starts only the web app."
-echo "INFO: First run may take 1-2 minutes while npm dependencies install."
-echo "INFO: Works with either ./scripts/start-dev.sh or ./scripts/start-local.sh."
-echo "INFO: The Statement Store page requires the relay-backed path."
+log_info "This starts only the web app."
+log_info "Override ports with STACK_PORT_OFFSET or STACK_*_PORT environment variables."
+log_info "First run may take 1-2 minutes while npm dependencies install."
+log_info "Works with either ./scripts/start-dev.sh or ./scripts/start-local.sh."
+log_info "The Statement Store page requires the relay-backed path."
 echo ""
+
+require_port_free "$STACK_FRONTEND_PORT"
 
 cd "$ROOT_DIR/web"
 npm install
 
 # Generate PAPI descriptors from the running chain
-if curl -s -o /dev/null http://127.0.0.1:9944 2>/dev/null; then
-    echo "INFO: Node detected at ws://127.0.0.1:9944 - updating PAPI descriptors..."
-    npm run update-types
-    npm run codegen
+if curl -s -o /dev/null "$SUBSTRATE_RPC_HTTP" 2>/dev/null; then
+    log_info "Node detected at $SUBSTRATE_RPC_WS - updating PAPI descriptors..."
+    update_papi_descriptors
 else
-    echo "WARN: Node not running at ws://127.0.0.1:9944"
-    echo "INFO: Start a chain first with ./scripts/start-dev.sh or ./scripts/start-local.sh"
-    echo "INFO: PAPI descriptors may be stale or missing."
+    log_warn "Node not running at $SUBSTRATE_RPC_WS"
+    log_info "Start a chain first with ./scripts/start-dev.sh or ./scripts/start-local.sh"
+    log_info "PAPI descriptors may be stale or missing."
     echo ""
 fi
 
-npm run dev
+export_frontend_runtime_env
+log_info "Frontend dev server: $FRONTEND_URL"
+npm run dev -- --host 127.0.0.1 --port "$STACK_FRONTEND_PORT"

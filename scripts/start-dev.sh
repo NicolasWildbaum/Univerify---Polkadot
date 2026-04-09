@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 echo "=== Polkadot Stack Template - Local Development ==="
 echo ""
 log_info "This is the fastest local loop for pallet/runtime work."
+log_info "Override ports with STACK_PORT_OFFSET or STACK_*_PORT environment variables."
 log_info "Typical startup time is under 2 minutes once Rust dependencies are built."
 log_info "Statement Store is intentionally unavailable in this solo-node mode."
 echo ""
@@ -23,7 +24,7 @@ echo "  Chain spec written to blockchain/chain_spec.json"
 
 # Start the local node
 echo "[3/3] Starting local omni-node..."
-log_info "RPC endpoint: ws://127.0.0.1:9944"
+log_info "RPC endpoint: $SUBSTRATE_RPC_WS"
 log_info "Use start-all.sh for the full stack, or start-local.sh for just the relay-backed network."
 echo ""
 run_local_node_foreground

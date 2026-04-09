@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getDefaultEthRpcUrl, getDefaultWsUrl } from "../config/network";
+import { getStoredEthRpcUrl, getStoredWsUrl } from "../config/network";
 
 export interface PalletAvailability {
 	templatePallet: boolean | null; // null = not checked yet
@@ -24,8 +24,8 @@ interface ChainState {
 }
 
 export const useChainStore = create<ChainState>((set) => ({
-	wsUrl: localStorage.getItem("ws-url") || getDefaultWsUrl(),
-	ethRpcUrl: localStorage.getItem("eth-rpc-url") || getDefaultEthRpcUrl(),
+	wsUrl: getStoredWsUrl(),
+	ethRpcUrl: getStoredEthRpcUrl(),
 	connected: false,
 	blockNumber: 0,
 	selectedAccount: 0,

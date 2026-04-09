@@ -7,11 +7,11 @@ mod commands;
 #[command(about = "CLI for interacting with the Polkadot Stack Template chain")]
 struct Cli {
 	/// WebSocket RPC endpoint URL
-	#[arg(long, default_value = "ws://127.0.0.1:9944")]
+	#[arg(long, env = "SUBSTRATE_RPC_WS", default_value = "ws://127.0.0.1:9944")]
 	url: String,
 
 	/// Ethereum JSON-RPC endpoint URL (for contract interaction via eth-rpc)
-	#[arg(long, default_value = "http://127.0.0.1:8545")]
+	#[arg(long, env = "ETH_RPC_HTTP", default_value = "http://127.0.0.1:8545")]
 	eth_rpc_url: String,
 
 	#[command(subcommand)]

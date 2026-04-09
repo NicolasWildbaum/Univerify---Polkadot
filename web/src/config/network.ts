@@ -1,7 +1,8 @@
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
-export const LOCAL_WS_URL = "ws://localhost:9944";
-export const LOCAL_ETH_RPC_URL = "http://localhost:8545";
+export const LOCAL_WS_URL = import.meta.env.VITE_LOCAL_WS_URL || "ws://localhost:9944";
+export const LOCAL_ETH_RPC_URL =
+	import.meta.env.VITE_LOCAL_ETH_RPC_URL || "http://localhost:8545";
 
 export const TESTNET_WS_URL = "wss://services.polkadothub-rpc.com/testnet";
 export const TESTNET_ETH_RPC_URL = "https://services.polkadothub-rpc.com/testnet";
@@ -39,6 +40,22 @@ export function getNetworkPresetEndpoints(preset: NetworkPreset) {
 			};
 }
 
+function getStoredUrl(storageKey: string, defaultKey: string, defaultValue: string) {
+	const storedValue = localStorage.getItem(storageKey);
+	const previousDefault = localStorage.getItem(defaultKey);
+	localStorage.setItem(defaultKey, defaultValue);
+
+	if (!storedValue || storedValue === previousDefault) {
+		return defaultValue;
+	}
+
+	return storedValue;
+}
+
+export function getStoredWsUrl() {
+	return getStoredUrl("ws-url", "default-ws-url", getDefaultWsUrl());
+}
+
 export function getStoredEthRpcUrl() {
-	return localStorage.getItem("eth-rpc-url") || getDefaultEthRpcUrl();
+	return getStoredUrl("eth-rpc-url", "default-eth-rpc-url", getDefaultEthRpcUrl());
 }

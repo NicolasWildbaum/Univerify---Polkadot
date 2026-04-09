@@ -30,7 +30,7 @@ Statement Store is an omni-node feature for validating, storing, and gossiping s
 - **RPC methods**: `statement_submit`, `statement_dump`, plus the topic/key query variants
 - **Local status in this template**: Available in the repo's relay-backed Zombienet scripts; unavailable in omni-node dev mode on stable2512-3
 
-The full-feature local scripts generate a local relay-chain-backed spec and then start a fixed-port Zombienet network (2 relay validators + 1 collator). They wait until `statement_submit` appears in `rpc_methods`, so the Statement Store RPCs are actually present before contract deployment or frontend startup continues.
+The full-feature local scripts generate a local relay-chain-backed spec and then start a Zombienet network (2 relay validators + 1 collator) using the active `STACK_PORT_OFFSET` / `STACK_*_PORT` settings. They wait until `statement_submit` appears in `rpc_methods`, so the Statement Store RPCs are actually present before contract deployment or frontend startup continues.
 
 The lighter solo-node tools (`start-dev.sh` and Docker Compose) use omni-node dev mode for a faster iteration loop. On `polkadot-sdk stable2512-3`, that dev path does not wire up Statement Store even if `--enable-statement-store` is passed.
 
@@ -60,7 +60,7 @@ Solidity source (ProofOfExistence.sol)
 
 Frontend / CLI
   → Ethereum JSON-RPC (eth_call, eth_sendTransaction)
-  → eth-rpc adapter (http://127.0.0.1:8545)
+  → eth-rpc adapter (default: http://127.0.0.1:8545)
   → pallet-revive on the parachain
 ```
 
@@ -267,7 +267,7 @@ The Ethereum JSON-RPC adapter for pallet-revive. Translates standard Ethereum RP
 
 - **Version**: v0.12.0
 - **Used for**: Bridging Ethereum tooling (MetaMask, Hardhat, viem, alloy) to the parachain
-- **Endpoint**: `http://127.0.0.1:8545` (local dev) or `https://services.polkadothub-rpc.com/testnet` (Polkadot Hub TestNet)
+- **Endpoint**: `http://127.0.0.1:8545` by default for local dev, or `https://services.polkadothub-rpc.com/testnet` (Polkadot Hub TestNet)
 - **Download**: [polkadot-sdk releases](https://github.com/paritytech/polkadot-sdk/releases/tag/polkadot-stable2512-3)
 
 ## Zombienet

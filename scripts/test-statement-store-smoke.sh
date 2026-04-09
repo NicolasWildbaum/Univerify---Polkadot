@@ -13,17 +13,12 @@ cleanup() {
 
 trap cleanup EXIT
 
-require_command() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Missing required command: $1" >&2
-    exit 1
-  fi
-}
-
 TMP_DIR="$(mktemp -d)"
 TEST_FILE="$TMP_DIR/statement.txt"
 
 echo "=== Statement Store Smoke Test ==="
+echo ""
+log_info "Testing against $WS_URL"
 echo ""
 
 require_command cargo

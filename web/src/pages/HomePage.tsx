@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 import { useChainStore } from "../store/chainStore";
 import { useConnection } from "../hooks/useConnection";
 import { getClient } from "../hooks/useChain";
-import { getNetworkPresetEndpoints, type NetworkPreset } from "../config/network";
+import {
+	LOCAL_ETH_RPC_URL,
+	LOCAL_WS_URL,
+	getNetworkPresetEndpoints,
+	type NetworkPreset,
+} from "../config/network";
 
 export default function HomePage() {
 	const { wsUrl, ethRpcUrl, setEthRpcUrl, connected, blockNumber, pallets } = useChainStore();
@@ -91,7 +96,7 @@ export default function HomePage() {
 							value={urlInput}
 							onChange={(e) => setUrlInput(e.target.value)}
 							onKeyDown={(e) => e.key === "Enter" && handleConnect()}
-							placeholder="ws://127.0.0.1:9944"
+							placeholder={LOCAL_WS_URL}
 							className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white flex-1 font-mono text-sm"
 						/>
 						<button
@@ -112,7 +117,7 @@ export default function HomePage() {
 						type="text"
 						value={ethRpcInput}
 						onChange={(e) => setEthRpcInput(e.target.value)}
-						placeholder="http://127.0.0.1:8545"
+						placeholder={LOCAL_ETH_RPC_URL}
 						className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white w-full font-mono text-sm"
 					/>
 					<p className="text-xs text-gray-500 mt-2">
