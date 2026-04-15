@@ -48,4 +48,14 @@ contract Univerify {
 	constructor() {
 		owner = msg.sender;
 	}
+
+	modifier onlyOwner() {
+		require(msg.sender == owner, "Not owner");
+		_;
+	}
+
+	modifier onlyAuthorizedIssuer() {
+		require(authorizedIssuers[msg.sender], "Not authorized issuer");
+		_;
+	}
 }
