@@ -4,7 +4,7 @@
 Univerify (working name)
 
 ## Overview
-This project is a Web3 application built on the Polkadot ecosystem to issue and verify academic certificates on-chain.
+This project is a Web3 application built on the Polkadot ecosystem to issue and verify academic certificates on-chain using Solidity smart contracts running in an EVM environment.
 
 The system allows authorized educational institutions (issuers) to register certificates whose integrity can be publicly verified using blockchain data.
 
@@ -51,10 +51,10 @@ The MVP includes:
 
 ## Tech Stack
 
-- Backend: FRAME Pallet (Rust)
+- Backend: Solidity Smart Contract (EVM)
 - Frontend: Web App (React/Vite from template)
 - Storage: On-chain + optional Bulletin Chain
-- Network: Local Zombienet (for demo)
+- Network: Paseo (for deployment)
 
 ## Template Structure (IMPORTANT)
 
@@ -62,9 +62,9 @@ This project is built on the `polkadot-stack-template`.
 
 Relevant directories:
 
-- `blockchain/` → FRAME pallet (MAIN BACKEND)
+- `contracts/evm/` → MAIN BACKEND (Solidity)
 - `web/` → frontend
-- `contracts/` → NOT USED
+- `blockchain/` → NOT USED
 - `cli/` → NOT USED
 
 ## Key Constraint

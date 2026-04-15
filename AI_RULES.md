@@ -1,5 +1,5 @@
 # AI RULES
-apply always = true
+Apply always = true
 
 These rules must be strictly followed when generating or modifying code in this repository.
 
@@ -12,9 +12,9 @@ These rules must be strictly followed when generating or modifying code in this 
 
 ## Architecture Rules
 
-- The backend is a **FRAME pallet (Rust)** located in `blockchain/`
-- DO NOT implement backend logic in `contracts/`
-- DO NOT introduce smart contracts unless explicitly requested
+- The backend is a **Solidity smart contract (EVM)** located in `contracts/evm/`
+- DO NOT implement backend logic in `blockchain/`
+- DO NOT introduce FRAME pallet code
 - DO NOT modify unrelated parts of the template
 
 ## Editing Rules
@@ -29,7 +29,7 @@ After writing code:
 
 - Explain each change clearly
 - Ensure consistency with existing code
-- Ensure the project still compiles
+- Ensure the project compiles
 
 ## Scope Control
 
@@ -51,11 +51,20 @@ All backend logic MUST follow:
 
 Do NOT invent new models or structures unless explicitly requested.
 
-## Storage Rules
+## Smart Contract Rules
 
-- Avoid unnecessary storage items
-- Avoid duplicating data
-- Keep storage minimal and efficient
+- Use Solidity best practices
+- Prefer `custom errors` over revert strings
+- Use `events` for all state changes
+- Avoid unnecessary storage writes
+- Minimize gas usage when possible
+- Use `keccak256` for hashing
+
+## Access Control
+
+- Use a simple admin model for MVP
+- Use mappings like `authorizedIssuers`
+- Avoid complex role systems (no OpenZeppelin AccessControl unless necessary)
 
 ## Security & Data Rules
 
@@ -65,9 +74,9 @@ Do NOT invent new models or structures unless explicitly requested.
 
 ## Code Quality
 
-- Follow Rust best practices
-- Avoid panics in production code
-- Keep functions small and readable
+- Keep contracts small and readable
+- Avoid deeply nested logic
+- Avoid unnecessary inheritance
 
 ## Communication Style
 

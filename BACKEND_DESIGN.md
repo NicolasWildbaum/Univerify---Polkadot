@@ -1,8 +1,9 @@
 # BACKEND DESIGN
 
+
 ## Overview
 
-This document defines the exact data model and behavior of the FRAME pallet for certificate issuance and verification.
+This document defines the exact data model and behavior of the Solidity smart contract for certificate issuance and verification.
 
 This design MUST be followed strictly.
 
@@ -16,9 +17,8 @@ Represents an authorized organization that can issue certificates.
 
 Fields:
 
-- issuer_id (optional internal ID)
-- account_id
-- display_name
+- account (address)
+- display_name (optional)
 - status (Active / Suspended)
 - metadata_hash (optional)
 
@@ -30,17 +30,17 @@ Represents an issued academic certificate.
 
 Fields:
 
-- certificate_id
-- issuer_account
-- student_identifier_hash
-- document_hash
-- certificate_type
-- issued_on
-- metadata_hash
-- file_reference (optional)
+- certificate_id (bytes32)
+- issuer (address)
+- student_identifier_hash (bytes32)
+- document_hash (bytes32)
+- certificate_type (string or bytes32)
+- issued_on (uint256 timestamp)
+- metadata_hash (bytes32)
+- file_reference (string, optional)
 - status (Active / Revoked)
-- issued_at_block
-- revoked_at_block (optional)
+- issued_at (block timestamp)
+- revoked_at (optional)
 - revocation_reason_hash (optional)
 
 ---
@@ -49,14 +49,16 @@ Fields:
 
 The `certificate_id` is deterministic:
 
-certificate_id = hash(
-    issuer_account ||
-    student_identifier_hash ||
-    document_hash ||
-    nonce
+certificate_id = keccak256(
+    abi.encode(
+        issuer,
+        student_identifier_hash,
+        document_hash,
+        nonce
+    )
 )
 
-This ensures uniqueness and portability.
+A nonce is required to avoid collisions.
 
 ---
 
@@ -64,40 +66,31 @@ This ensures uniqueness and portability.
 
 ### Authorized Issuers
 
-Map:
+mapping(address => bool) public authorizedIssuers;
 
-AccountId → IssuerProfile
+Optional:
+
+mapping(address => IssuerProfile) public issuerProfiles;
 
 ---
 
 ### Certificates
 
-Map:
-
-CertificateId → CertificateRecord
+mapping(bytes32 => Certificate) public certificates;
 
 ---
 
-### Optional Index
+### Nonce
 
-DocumentHash → CertificateId
+uint256 public nonce;
 
-(Only if needed)
-
----
-
-### Counters
-
-Optional:
-
-- NextIssuerId
-- Nonce (if required for certificate_id uniqueness)
+Used to ensure unique certificate IDs.
 
 ---
 
-## Extrinsics
+## Functions
 
-### register_issuer
+### registerIssuer
 
 Admin only.
 
@@ -105,7 +98,7 @@ Registers a new authorized issuer.
 
 ---
 
-### set_issuer_status
+### setIssuerStatus
 
 Admin only.
 
@@ -113,11 +106,9 @@ Enables or disables an issuer.
 
 ---
 
-### issue_certificate
+### issueCertificate
 
 Callable only by authorized issuers.
-
-Creates a new certificate.
 
 Inputs:
 
@@ -128,22 +119,24 @@ Inputs:
 - metadata_hash
 - file_reference (optional)
 
+Creates a new certificate.
+
 ---
 
-### revoke_certificate
+### revokeCertificate
 
-Callable by issuer (or admin).
-
-Marks certificate as revoked.
+Callable by issuer.
 
 Inputs:
 
 - certificate_id
 - revocation_reason_hash (optional)
 
+Marks certificate as revoked.
+
 ---
 
-### attach_file_reference (optional)
+### attachFileReference (optional)
 
 Allows attaching a Bulletin Chain reference after issuance.
 
@@ -151,29 +144,23 @@ Allows attaching a Bulletin Chain reference after issuance.
 
 ## Events
 
-- IssuerRegistered
-- IssuerStatusChanged
-- CertificateIssued
-- CertificateRevoked
-- CertificateFileReferenceAttached
+- IssuerRegistered(address issuer)
+- IssuerStatusChanged(address issuer, bool active)
+- CertificateIssued(bytes32 certificateId, address issuer)
+- CertificateRevoked(bytes32 certificateId)
+- FileReferenceAttached(bytes32 certificateId)
 
 ---
 
 ## Errors
 
-### Issuer Errors
-
 - UnauthorizedIssuer
 - IssuerNotFound
 - IssuerSuspended
-
-### Certificate Errors
-
 - CertificateNotFound
 - CertificateAlreadyRevoked
-- DuplicateCertificate (if enforced)
-- InvalidInput
 - NotCertificateIssuer
+- InvalidInput
 
 ---
 
@@ -202,7 +189,7 @@ Identity is verified through:
 The `file_reference`:
 
 - Is optional
-- Is treated as an opaque identifier
+- Is treated as an opaque string
 - Is NOT the source of truth
 
 Verification MUST always rely on `document_hash`.
@@ -214,7 +201,7 @@ Verification MUST always rely on `document_hash`.
 - No PII on-chain
 - Minimal storage
 - Deterministic behavior
-- Extensible for future issuer validation model
+- Simple access control
 
 ---
 
