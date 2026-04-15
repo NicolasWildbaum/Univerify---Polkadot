@@ -62,6 +62,15 @@ contract Univerify {
 		_;
 	}
 
+	function _generateCertificateId(
+		address issuer,
+		bytes32 student_identifier_hash,
+		bytes32 document_hash,
+		uint256 currentNonce
+	) internal pure returns (bytes32) {
+		return keccak256(abi.encode(issuer, student_identifier_hash, document_hash, currentNonce));
+	}
+
 	function registerIssuer(address issuer, bytes32 metadataHash) external onlyOwner {
 		require(issuer != address(0), "Zero address");
 		require(issuerProfiles[issuer].account == address(0), "Issuer already registered");
