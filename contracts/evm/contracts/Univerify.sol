@@ -45,6 +45,9 @@ contract Univerify {
 
 	uint256 public nonce;
 
+	event IssuerRegistered(address issuer);
+	event IssuerStatusChanged(address issuer, bool active);
+
 	constructor() {
 		owner = msg.sender;
 	}
@@ -57,5 +60,24 @@ contract Univerify {
 	modifier onlyAuthorizedIssuer() {
 		require(authorizedIssuers[msg.sender], "Not authorized issuer");
 		_;
+	}
+
+	function registerIssuer(address issuer, bytes32 metadataHash) external onlyOwner {
+		require(issuer != address(0), "Zero address");
+		require(issuerProfiles[issuer].account == address(0), "Issuer already registered");
+		authorizedIssuers[issuer] = true;
+		issuerProfiles[issuer] = IssuerProfile({
+			account: issuer,
+			status: IssuerStatus.Active,
+			metadata_hash: metadataHash
+		});
+		emit IssuerRegistered(issuer);
+	}
+
+	function setIssuerStatus(address issuer, bool active) external onlyOwner {
+		require(issuerProfiles[issuer].account != address(0), "Issuer not registered");
+		authorizedIssuers[issuer] = active;
+		issuerProfiles[issuer].status = active ? IssuerStatus.Active : IssuerStatus.Suspended;
+		emit IssuerStatusChanged(issuer, active);
 	}
 }
