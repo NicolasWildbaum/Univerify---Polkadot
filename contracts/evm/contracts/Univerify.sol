@@ -15,7 +15,6 @@ contract Univerify {
 	}
 
 	struct Certificate {
-		bytes32 certificate_id;
 		address issuer;
 		bytes32 student_identifier_hash;
 		bytes32 document_hash;
@@ -41,9 +40,8 @@ contract Univerify {
 
 	mapping(address => IssuerProfile) public issuerProfiles;
 
+	/// @notice Certificates keyed by `document_hash` (hash of the certificate PDF / file).
 	mapping(bytes32 => Certificate) public certificates;
-
-	uint256 public nonce;
 
 	event IssuerRegistered(address issuer);
 	event IssuerStatusChanged(address issuer, bool active);
@@ -60,15 +58,6 @@ contract Univerify {
 	modifier onlyAuthorizedIssuer() {
 		require(authorizedIssuers[msg.sender], "Not authorized issuer");
 		_;
-	}
-
-	function _generateCertificateId(
-		address issuer,
-		bytes32 student_identifier_hash,
-		bytes32 document_hash,
-		uint256 currentNonce
-	) internal pure returns (bytes32) {
-		return keccak256(abi.encode(issuer, student_identifier_hash, document_hash, currentNonce));
 	}
 
 	function registerIssuer(address issuer, bytes32 metadataHash) external onlyOwner {
@@ -88,5 +77,45 @@ contract Univerify {
 		authorizedIssuers[issuer] = active;
 		issuerProfiles[issuer].status = active ? IssuerStatus.Active : IssuerStatus.Suspended;
 		emit IssuerStatusChanged(issuer, active);
+	}
+
+	function issueCertificate(
+		bytes32 student_identifier_hash,
+		bytes32 document_hash,
+		string calldata certificate_type,
+		uint256 issued_on,
+		bytes32 metadata_hash
+	) external onlyAuthorizedIssuer returns (bytes32) {
+		require(student_identifier_hash != bytes32(0), "Invalid student identifier hash");
+		require(document_hash != bytes32(0), "Invalid document hash");
+		require(certificates[document_hash].issuer == address(0), "Certificate already exists");
+
+		certificates[document_hash] = Certificate({
+			issuer: msg.sender,
+			student_identifier_hash: student_identifier_hash,
+			document_hash: document_hash,
+			certificate_type: certificate_type,
+			issued_on: issued_on,
+			metadata_hash: metadata_hash,
+			file_reference: "",
+			status: CertificateStatus.Active,
+			issued_at: block.timestamp,
+			revoked_at: 0,
+			revocation_reason_hash: bytes32(0)
+		});
+
+		return document_hash;
+	}
+
+	function revokeCertificate(bytes32 document_hash, bytes32 revocation_reason_hash) external onlyAuthorizedIssuer {
+		require(document_hash != bytes32(0), "Invalid document hash");
+		Certificate storage cert = certificates[document_hash];
+		require(cert.issuer != address(0), "Certificate not found");
+		require(cert.issuer == msg.sender, "Not certificate issuer");
+		require(cert.status == CertificateStatus.Active, "Not active");
+
+		cert.status = CertificateStatus.Revoked;
+		cert.revoked_at = block.timestamp;
+		cert.revocation_reason_hash = revocation_reason_hash;
 	}
 }
