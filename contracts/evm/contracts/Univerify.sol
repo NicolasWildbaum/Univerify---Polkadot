@@ -46,6 +46,7 @@ contract Univerify {
 	event IssuerRegistered(address issuer);
 	event IssuerStatusChanged(address issuer, bool active);
 	event CertificateIssued(bytes32 documentHash, address issuer);
+	event FileReferenceAttached(bytes32 documentHash);
 
 	constructor() {
 		owner = msg.sender;
@@ -108,6 +109,20 @@ contract Univerify {
 		emit CertificateIssued(document_hash, msg.sender);
 
 		return document_hash;
+	}
+
+	function attachFileReference(
+		bytes32 document_hash,
+		string calldata fileReference
+	) external onlyAuthorizedIssuer {
+		require(document_hash != bytes32(0), "Invalid document hash");
+		Certificate storage cert = certificates[document_hash];
+		require(cert.issuer != address(0), "Certificate not found");
+		require(cert.issuer == msg.sender, "Not certificate issuer");
+
+		cert.file_reference = fileReference;
+
+		emit FileReferenceAttached(document_hash);
 	}
 
 	function revokeCertificate(bytes32 document_hash, bytes32 revocation_reason_hash) external onlyAuthorizedIssuer {
