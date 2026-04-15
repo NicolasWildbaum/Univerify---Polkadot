@@ -45,6 +45,7 @@ contract Univerify {
 
 	event IssuerRegistered(address issuer);
 	event IssuerStatusChanged(address issuer, bool active);
+	event CertificateIssued(bytes32 documentHash, address issuer);
 
 	constructor() {
 		owner = msg.sender;
@@ -103,6 +104,8 @@ contract Univerify {
 			revoked_at: 0,
 			revocation_reason_hash: bytes32(0)
 		});
+
+		emit CertificateIssued(document_hash, msg.sender);
 
 		return document_hash;
 	}
