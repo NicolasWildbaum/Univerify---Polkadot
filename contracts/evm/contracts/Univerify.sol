@@ -34,6 +34,23 @@ contract Univerify {
 		bytes32 metadata_hash;
 	}
 
+	error NotOwner();
+	error UnauthorizedIssuer();
+	error InvalidIssuerAddress();
+	error IssuerAlreadyRegistered();
+	error IssuerNotFound();
+
+	error InvalidStudentIdentifierHash();
+	error InvalidDocumentHash();
+	error InvalidMetadataHash();
+	error EmptyCertificateType();
+	error EmptyFileReference();
+
+	error CertificateAlreadyExists();
+	error CertificateNotFound();
+	error CertificateAlreadyRevoked();
+	error NotCertificateIssuer();
+
 	address public owner;
 
 	mapping(address => bool) public authorizedIssuers;
@@ -53,18 +70,18 @@ contract Univerify {
 	}
 
 	modifier onlyOwner() {
-		require(msg.sender == owner, "Not owner");
+		if (msg.sender != owner) revert NotOwner();
 		_;
 	}
 
 	modifier onlyAuthorizedIssuer() {
-		require(authorizedIssuers[msg.sender], "Not authorized issuer");
+		if (!authorizedIssuers[msg.sender]) revert UnauthorizedIssuer();
 		_;
 	}
 
 	function registerIssuer(address issuer, bytes32 metadataHash) external onlyOwner {
-		require(issuer != address(0), "Zero address");
-		require(issuerProfiles[issuer].account == address(0), "Issuer already registered");
+		if (issuer == address(0)) revert InvalidIssuerAddress();
+		if (issuerProfiles[issuer].account != address(0)) revert IssuerAlreadyRegistered();
 		authorizedIssuers[issuer] = true;
 		issuerProfiles[issuer] = IssuerProfile({
 			account: issuer,
@@ -75,7 +92,7 @@ contract Univerify {
 	}
 
 	function setIssuerStatus(address issuer, bool active) external onlyOwner {
-		require(issuerProfiles[issuer].account != address(0), "Issuer not registered");
+		if (issuerProfiles[issuer].account == address(0)) revert IssuerNotFound();
 		authorizedIssuers[issuer] = active;
 		issuerProfiles[issuer].status = active ? IssuerStatus.Active : IssuerStatus.Suspended;
 		emit IssuerStatusChanged(issuer, active);
@@ -88,9 +105,11 @@ contract Univerify {
 		uint256 issued_on,
 		bytes32 metadata_hash
 	) external onlyAuthorizedIssuer returns (bytes32) {
-		require(student_identifier_hash != bytes32(0), "Invalid student identifier hash");
-		require(document_hash != bytes32(0), "Invalid document hash");
-		require(certificates[document_hash].issuer == address(0), "Certificate already exists");
+		if (student_identifier_hash == bytes32(0)) revert InvalidStudentIdentifierHash();
+		if (document_hash == bytes32(0)) revert InvalidDocumentHash();
+		if (metadata_hash == bytes32(0)) revert InvalidMetadataHash();
+		if (bytes(certificate_type).length == 0) revert EmptyCertificateType();
+		if (certificates[document_hash].issuer != address(0)) revert CertificateAlreadyExists();
 
 		certificates[document_hash] = Certificate({
 			issuer: msg.sender,
@@ -115,10 +134,11 @@ contract Univerify {
 		bytes32 document_hash,
 		string calldata fileReference
 	) external onlyAuthorizedIssuer {
-		require(document_hash != bytes32(0), "Invalid document hash");
+		if (document_hash == bytes32(0)) revert InvalidDocumentHash();
 		Certificate storage cert = certificates[document_hash];
-		require(cert.issuer != address(0), "Certificate not found");
-		require(cert.issuer == msg.sender, "Not certificate issuer");
+		if (cert.issuer == address(0)) revert CertificateNotFound();
+		if (cert.issuer != msg.sender) revert NotCertificateIssuer();
+		if (bytes(fileReference).length == 0) revert EmptyFileReference();
 
 		cert.file_reference = fileReference;
 
@@ -126,11 +146,11 @@ contract Univerify {
 	}
 
 	function revokeCertificate(bytes32 document_hash, bytes32 revocation_reason_hash) external onlyAuthorizedIssuer {
-		require(document_hash != bytes32(0), "Invalid document hash");
+		if (document_hash == bytes32(0)) revert InvalidDocumentHash();
 		Certificate storage cert = certificates[document_hash];
-		require(cert.issuer != address(0), "Certificate not found");
-		require(cert.issuer == msg.sender, "Not certificate issuer");
-		require(cert.status == CertificateStatus.Active, "Not active");
+		if (cert.issuer == address(0)) revert CertificateNotFound();
+		if (cert.issuer != msg.sender) revert NotCertificateIssuer();
+		if (cert.status != CertificateStatus.Active) revert CertificateAlreadyRevoked();
 
 		cert.status = CertificateStatus.Revoked;
 		cert.revoked_at = block.timestamp;
