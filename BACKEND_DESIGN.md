@@ -28,16 +28,17 @@ Fields:
 
 Represents an issued academic certificate.
 
+**Primary identity:** the certificate is keyed and looked up by **`document_hash`** (hash of the certificate PDF / file). There is no separate synthetic `certificate_id`.
+
 Fields:
 
-- certificate_id (bytes32)
 - issuer (address)
 - student_identifier_hash (bytes32)
-- document_hash (bytes32)
-- certificate_type (string or bytes32)
+- document_hash (bytes32) — same value as the mapping key; stored in the struct for full-record reads
+- certificate_type (string)
 - issued_on (uint256 timestamp)
 - metadata_hash (bytes32)
-- file_reference (string, optional)
+- file_reference (string, optional; MVP may use empty string)
 - status (Active / Revoked)
 - issued_at (block timestamp)
 - revoked_at (optional)
@@ -45,20 +46,12 @@ Fields:
 
 ---
 
-## Certificate ID
+## Certificate identity and lookup
 
-The `certificate_id` is deterministic:
-
-certificate_id = keccak256(
-    abi.encode(
-        issuer,
-        student_identifier_hash,
-        document_hash,
-        nonce
-    )
-)
-
-A nonce is required to avoid collisions.
+- **`document_hash`** is the **only** identifier needed for storage and verification.
+- Third parties hash the PDF off-chain and use that **`bytes32`** to read `certificates(document_hash)` on-chain.
+- **No nonce** and **no** `keccak256(issuer, …, nonce)` id: those would require hidden inputs and do not match the “verify from file alone” flow.
+- **Uniqueness:** at most one certificate per `document_hash`; duplicate issuance must revert.
 
 ---
 
@@ -78,13 +71,7 @@ mapping(address => IssuerProfile) public issuerProfiles;
 
 mapping(bytes32 => Certificate) public certificates;
 
----
-
-### Nonce
-
-uint256 public nonce;
-
-Used to ensure unique certificate IDs.
+The mapping key **is** `document_hash` (the hash of the certificate file).
 
 ---
 
@@ -117,22 +104,23 @@ Inputs:
 - certificate_type
 - issued_on
 - metadata_hash
-- file_reference (optional)
 
-Creates a new certificate.
+Stores the certificate at `certificates[document_hash]`. Rejects if a certificate already exists for that `document_hash`.
+
+Returns `document_hash` (the lookup key).
 
 ---
 
 ### revokeCertificate
 
-Callable by issuer.
+Callable by the **issuing** address for that certificate (`msg.sender == certificates[document_hash].issuer`).
 
 Inputs:
 
-- certificate_id
-- revocation_reason_hash (optional)
+- document_hash
+- revocation_reason_hash (optional; may be `bytes32(0)`)
 
-Marks certificate as revoked.
+Marks the certificate as revoked.
 
 ---
 
@@ -144,11 +132,16 @@ Allows attaching a Bulletin Chain reference after issuance.
 
 ## Events
 
+Implemented in contract:
+
 - IssuerRegistered(address issuer)
 - IssuerStatusChanged(address issuer, bool active)
-- CertificateIssued(bytes32 certificateId, address issuer)
-- CertificateRevoked(bytes32 certificateId)
-- FileReferenceAttached(bytes32 certificateId)
+
+May be added later (not required for MVP logic):
+
+- CertificateIssued(bytes32 indexed document_hash, address issuer)
+- CertificateRevoked(bytes32 indexed document_hash)
+- FileReferenceAttached(bytes32 indexed document_hash)
 
 ---
 
@@ -162,15 +155,17 @@ Allows attaching a Bulletin Chain reference after issuance.
 - NotCertificateIssuer
 - InvalidInput
 
+(Concrete revert strings in Solidity may differ; align naming in a later refactor.)
+
 ---
 
 ## Verification Model
 
 The blockchain verifies:
 
-- Existence of certificate
-- Issuer authenticity
-- Document integrity via `document_hash`
+- Existence of a certificate for the given **`document_hash`**
+- Issuer authenticity (read `issuer` from the record)
+- Document integrity: the third party’s hash **is** the lookup key — if the record exists, it matches that file
 - Revocation status
 
 The blockchain DOES NOT verify:
@@ -192,7 +187,7 @@ The `file_reference`:
 - Is treated as an opaque string
 - Is NOT the source of truth
 
-Verification MUST always rely on `document_hash`.
+Verification MUST always rely on **`document_hash`** as the primary handle.
 
 ---
 
@@ -202,6 +197,7 @@ Verification MUST always rely on `document_hash`.
 - Minimal storage
 - Deterministic behavior
 - Simple access control
+- **Verification path:** PDF → hash → on-chain lookup (no hidden ids)
 
 ---
 

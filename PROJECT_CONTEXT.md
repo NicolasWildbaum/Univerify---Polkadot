@@ -9,36 +9,42 @@ This project is a Web3 application built on the Polkadot ecosystem to issue and 
 The system allows authorized educational institutions (issuers) to register certificates whose integrity can be publicly verified using blockchain data.
 
 ## Core Idea
-Each certificate is represented on-chain by:
+Each certificate is represented on-chain primarily by **`document_hash`**: the hash of the certificate PDF (or image). That hash is both the **public lookup key** and the **integrity anchor**—a third party only needs the file to recompute the hash and query the contract.
 
-- A deterministic `certificate_id`
-- A `document_hash` (hash of the certificate PDF/image)
-- A `student_identifier_hash` (no PII on-chain)
-- Minimal metadata
-- An optional reference to a file stored on Bulletin Chain
+On-chain fields include:
+
+- **`document_hash`** — canonical identifier; maps to `certificates[document_hash]`
+- **`issuer`** — who attested to this file
+- **`student_identifier_hash`** (no PII on-chain)
+- Minimal metadata (`certificate_type`, `issued_on`, `metadata_hash`, etc.)
+- An optional reference to a file stored on Bulletin Chain (`file_reference`)
 - A status (Active / Revoked)
+
+There is **no** separate synthetic certificate id (no nonce-based `keccak256` identity): verification is designed so that **hashing the PDF is enough** to find the record.
 
 The blockchain acts as a **source of truth for authenticity**, not for identity.
 
 ## Verification Model
 Verification works as follows:
 
-1. A user provides a certificate file (PDF/image)
-2. The system computes its hash
-3. The hash is compared with the on-chain `document_hash`
-4. If it matches and the certificate is Active → valid certificate
+1. A user provides a certificate file (PDF/image).
+2. The system computes its hash → **`document_hash`**.
+3. The app reads **`certificates(document_hash)`** on-chain (or equivalent via the contract ABI).
+4. If no record exists (`issuer == address(0)`) → not registered on-chain.
+5. If a record exists: check **`status`** (Active vs Revoked) and interpret **`issuer`** (and optional issuer metadata off-chain).
+6. The on-chain **`document_hash`** field matches the key; integrity is “same file as registered.”
 
-The student's name is included in the certificate document itself, not on-chain.
+The student's name appears in the certificate document itself, not as raw PII on-chain.
 
 ## MVP Scope (STRICT)
 
 The MVP includes:
 
 - Register authorized issuers (admin-controlled)
-- Issue certificates
-- Revoke certificates
-- Verify certificates (via hash comparison)
-- Optionally attach a Bulletin Chain file reference
+- Issue certificates (one per `document_hash`)
+- Revoke certificates by `document_hash` (issuer-only)
+- Verify certificates by recomputing the file hash and querying storage
+- Optionally attach a Bulletin Chain file reference (future / optional field)
 
 ## Out of Scope (for MVP)
 
