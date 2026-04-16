@@ -14,6 +14,8 @@ export default function App() {
 		{ path: "/pallet", label: "Pallet PoE", enabled: pallets.templatePallet === true },
 		{ path: "/evm", label: "EVM PoE", enabled: pallets.revive === true },
 		{ path: "/pvm", label: "PVM PoE", enabled: pallets.revive === true },
+		{ path: "/univerify", label: "Issue", enabled: pallets.revive === true },
+		{ path: "/verify", label: "Verify", enabled: true },
 		{ path: "/statements", label: "Statements", enabled: true },
 		{ path: "/accounts", label: "Accounts", enabled: true },
 	];
