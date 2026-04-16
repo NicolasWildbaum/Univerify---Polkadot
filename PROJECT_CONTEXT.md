@@ -4,62 +4,65 @@
 Univerify (working name)
 
 ## Overview
-This project is a Web3 application built on the Polkadot ecosystem to issue and verify academic certificates on-chain using Solidity smart contracts running in an EVM environment.
+This project is a Web3 application built on the Polkadot ecosystem for issuing and verifying academic certificates on-chain using Solidity smart contracts running in an EVM environment.
 
-The system allows authorized educational institutions (issuers) to register certificates whose integrity can be publicly verified using blockchain data.
+The system allows authorized educational institutions (issuers) to register verifiable credential records on-chain. Verification is **presentation-based**: a holder presents their credential to a verifier, and the verifier checks existence, integrity, issuer authenticity, and revocation status against the blockchain.
 
 ## Core Idea
-Each certificate is represented on-chain primarily by **`document_hash`**: the hash of the certificate PDF (or image). That hash is both the **public lookup key** and the **integrity anchor**—a third party only needs the file to recompute the hash and query the contract.
+Each certificate is represented on-chain as a **verifiable credential record**, not as a document or file hash.
 
-On-chain fields include:
+The issuer constructs a structured credential (claims), computes a deterministic hash (`claimsHash`), and registers it on-chain under a unique `certificateId`. The holder receives the full credential off-chain and controls what they present to verifiers.
 
-- **`document_hash`** — canonical identifier; maps to `certificates[document_hash]`
-- **`issuer`** — who attested to this file
-- **`student_identifier_hash`** (no PII on-chain)
-- Minimal metadata (`certificate_type`, `issued_on`, `metadata_hash`, etc.)
-- An optional reference to a file stored on Bulletin Chain (`file_reference`)
-- A status (Active / Revoked)
+On-chain fields:
 
-There is **no** separate synthetic certificate id (no nonce-based `keccak256` identity): verification is designed so that **hashing the PDF is enough** to find the record.
+- **`certificateId`** — unique identifier (mapping key), generated off-chain by the issuer
+- **`issuer`** — address of the authorized institution that issued the credential
+- **`claimsHash`** — deterministic hash of the canonical credential claims
+- **`recipientCommitment`** — privacy-preserving commitment binding the credential to its holder
+- **`issuedAt`** — block timestamp of on-chain registration
+- **`revoked`** — revocation status (bool)
 
-The blockchain acts as a **source of truth for authenticity**, not for identity.
+There is **no** public enumeration or discovery of certificates by student identity. The contract cannot be scanned or filtered to find all certificates belonging to a given person.
+
+The blockchain acts as a **source of truth for authenticity and integrity**, not for identity or content.
 
 ## Verification Model
-Verification works as follows:
+Verification follows a presentation-based flow:
 
-1. A user provides a certificate file (PDF/image).
-2. The system computes its hash → **`document_hash`**.
-3. The app reads **`certificates(document_hash)`** on-chain (or equivalent via the contract ABI).
-4. If no record exists (`issuer == address(0)`) → not registered on-chain.
-5. If a record exists: check **`status`** (Active vs Revoked) and interpret **`issuer`** (and optional issuer metadata off-chain).
-6. The on-chain **`document_hash`** field matches the key; integrity is “same file as registered.”
+1. A holder presents a structured credential (e.g., JSON) to a verifier.
+2. The credential includes the `certificateId` and the full claims data.
+3. The verifier recomputes `claimsHash = keccak256(canonicalClaims)`.
+4. The verifier calls `verifyCertificate(certificateId, claimsHash)` on-chain.
+5. If the record exists, the hash matches, the issuer is trusted, and the certificate is not revoked → the credential is verified.
 
-The student's name appears in the certificate document itself, not as raw PII on-chain.
+### What a PDF is (and is not)
+A PDF (or any visual document) is an **optional rendering** of the credential for human readability. It is NOT the source of truth. Verification always goes through the structured credential data and the on-chain record.
 
 ## MVP Scope (STRICT)
 
 The MVP includes:
 
 - Register authorized issuers (admin-controlled)
-- Issue certificates (one per `document_hash`)
-- Revoke certificates by `document_hash` (issuer-only)
-- Verify certificates by recomputing the file hash and querying storage
-- Optionally attach a Bulletin Chain file reference (future / optional field)
+- Issue certificates as verifiable credential records (`certificateId` + `claimsHash` + `recipientCommitment`)
+- Revoke certificates by `certificateId` (original issuer only)
+- Verify certificates via `verifyCertificate(certificateId, claimsHash)`
+- No public enumeration or student-based indexing
 
 ## Out of Scope (for MVP)
 
+- Selective disclosure of credential attributes
 - Decentralized organization validation
 - Governance mechanisms
-- DID / Verifiable Credentials
+- DID / W3C Verifiable Credentials standard compliance
 - Identity resolution on-chain
 - Complex indexing or querying
+- Batch issuance
 - Advanced access control models
 
 ## Tech Stack
 
 - Backend: Solidity Smart Contract (EVM)
 - Frontend: Web App (React/Vite from template)
-- Storage: On-chain + optional Bulletin Chain
 - Network: Paseo (for deployment)
 
 ## Template Structure (IMPORTANT)
@@ -80,3 +83,4 @@ This project MUST:
 - Keep a minimal, modular design
 - Avoid over-engineering
 - Remain fully functional within 2 weeks
+- Prioritize presentation-based verification over public discoverability

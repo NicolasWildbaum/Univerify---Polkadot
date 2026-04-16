@@ -1,11 +1,21 @@
 # BACKEND DESIGN
 
-
 ## Overview
 
-This document defines the exact data model and behavior of the Solidity smart contract for certificate issuance and verification.
+This document defines the data model and behavior of the `Univerify` Solidity smart contract — a **verifiable academic credential registry**.
+
+The contract records the **existence, integrity, issuer, and revocation status** of academic certificates on-chain. Verification is **presentation-based**: the holder controls which credential they present, and the verifier checks it against the on-chain record.
 
 This design MUST be followed strictly.
+
+---
+
+## Core Principles
+
+- **Credentials, not documents.** A certificate is a structured credential issued by an authorized institution, not a PDF or file.
+- **Presentation-based verification.** A verifier only sees what the holder chooses to present. There is no public discovery of certificates by student identity.
+- **No PII on-chain.** The blockchain stores only hashes and addresses — never names, emails, or any personal data.
+- **Minimal on-chain footprint.** Only what is needed for integrity verification is stored.
 
 ---
 
@@ -13,45 +23,38 @@ This design MUST be followed strictly.
 
 ### Issuer
 
-Represents an authorized organization that can issue certificates.
+Represents an authorized institution (university) that can issue certificates.
 
 Fields:
 
-- account (address)
-- display_name (optional)
-- status (Active / Suspended)
-- metadata_hash (optional)
+- `account` (address)
+- `status` (Active / Suspended)
+- `metadataHash` (bytes32) — hash of off-chain issuer metadata (name, DID, etc.)
 
 ---
 
 ### Certificate
 
-Represents an issued academic certificate.
+Represents an issued academic credential record.
 
-**Primary identity:** the certificate is keyed and looked up by **`document_hash`** (hash of the certificate PDF / file). There is no separate synthetic `certificate_id`.
+**Primary identity:** each certificate is keyed and looked up by `certificateId`, a unique identifier generated off-chain by the issuer.
 
 Fields:
 
-- issuer (address)
-- student_identifier_hash (bytes32)
-- document_hash (bytes32) — same value as the mapping key; stored in the struct for full-record reads
-- certificate_type (string)
-- issued_on (uint256 timestamp)
-- metadata_hash (bytes32)
-- file_reference (string, optional; MVP may use empty string)
-- status (Active / Revoked)
-- issued_at (block timestamp)
-- revoked_at (optional)
-- revocation_reason_hash (optional)
+- `issuer` (address) — the authorized issuer that registered this credential
+- `claimsHash` (bytes32) — deterministic hash of the canonical credential claims (e.g., `keccak256(abi.encode(claims))`)
+- `recipientCommitment` (bytes32) — privacy-preserving commitment binding the credential to its holder (e.g., `keccak256(secret || holderIdentifier)`)
+- `issuedAt` (uint256) — block timestamp when the credential was registered on-chain
+- `revoked` (bool) — whether the certificate has been revoked
 
 ---
 
-## Certificate identity and lookup
+## Certificate Identity and Lookup
 
-- **`document_hash`** is the **only** identifier needed for storage and verification.
-- Third parties hash the PDF off-chain and use that **`bytes32`** to read `certificates(document_hash)` on-chain.
-- **No nonce** and **no** `keccak256(issuer, …, nonce)` id: those would require hidden inputs and do not match the “verify from file alone” flow.
-- **Uniqueness:** at most one certificate per `document_hash`; duplicate issuance must revert.
+- `certificateId` is the **only** on-chain lookup key for a certificate.
+- The issuer generates `certificateId` off-chain using any deterministic unique scheme (e.g., UUID hash, sequential nonce hash, etc.).
+- **Uniqueness:** at most one certificate per `certificateId`; duplicate issuance reverts.
+- **No enumeration:** there are no arrays, counters, or student-to-certificate mappings. The contract cannot be scanned for all certificates or filtered by student.
 
 ---
 
@@ -59,19 +62,18 @@ Fields:
 
 ### Authorized Issuers
 
+```
 mapping(address => bool) public authorizedIssuers;
-
-Optional:
-
 mapping(address => IssuerProfile) public issuerProfiles;
-
----
+```
 
 ### Certificates
 
+```
 mapping(bytes32 => Certificate) public certificates;
+```
 
-The mapping key **is** `document_hash` (the hash of the certificate file).
+The mapping key is `certificateId`.
 
 ---
 
@@ -79,19 +81,11 @@ The mapping key **is** `document_hash` (the hash of the certificate file).
 
 ### registerIssuer
 
-Admin only.
-
-Registers a new authorized issuer.
-
----
+Admin only. Registers a new authorized issuer with metadata.
 
 ### setIssuerStatus
 
-Admin only.
-
-Enables or disables an issuer.
-
----
+Admin only. Enables or disables an issuer.
 
 ### issueCertificate
 
@@ -99,63 +93,64 @@ Callable only by authorized issuers.
 
 Inputs:
 
-- student_identifier_hash
-- document_hash
-- certificate_type
-- issued_on
-- metadata_hash
+- `certificateId` (bytes32)
+- `claimsHash` (bytes32)
+- `recipientCommitment` (bytes32)
 
-Stores the certificate at `certificates[document_hash]`. Rejects if a certificate already exists for that `document_hash`.
-
-Returns `document_hash` (the lookup key).
-
----
+Stores the certificate at `certificates[certificateId]`. Reverts if a certificate already exists for that `certificateId`. Returns `certificateId`.
 
 ### revokeCertificate
 
-Callable by the **issuing** address for that certificate (`msg.sender == certificates[document_hash].issuer`).
+Callable by the **original issuer** of the certificate.
 
 Inputs:
 
-- document_hash
-- revocation_reason_hash (optional; may be `bytes32(0)`)
+- `certificateId` (bytes32)
 
-Marks the certificate as revoked.
+Marks the certificate as revoked. Reverts if the certificate does not exist, is already revoked, or the caller is not the original issuer.
 
----
+### verifyCertificate
 
-### attachFileReference (optional)
+Public view function. Convenience function for verifiers.
 
-Allows attaching a Bulletin Chain reference after issuance.
+Inputs:
+
+- `certificateId` (bytes32)
+- `claimsHash` (bytes32) — recomputed from the presented credential
+
+Returns:
+
+- `exists` (bool)
+- `issuer` (address)
+- `hashMatch` (bool) — whether the presented claimsHash matches the stored one
+- `revoked` (bool)
+- `issuedAt` (uint256)
 
 ---
 
 ## Events
 
-Implemented in contract:
-
-- IssuerRegistered(address issuer)
-- IssuerStatusChanged(address issuer, bool active)
-
-May be added later (not required for MVP logic):
-
-- CertificateIssued(bytes32 indexed document_hash, address issuer)
-- CertificateRevoked(bytes32 indexed document_hash)
-- FileReferenceAttached(bytes32 indexed document_hash)
+- `IssuerRegistered(address indexed issuer)`
+- `IssuerStatusChanged(address indexed issuer, bool active)`
+- `CertificateIssued(bytes32 indexed certificateId, address indexed issuer)`
+- `CertificateRevoked(bytes32 indexed certificateId, address indexed issuer)`
 
 ---
 
 ## Errors
 
-- UnauthorizedIssuer
-- IssuerNotFound
-- IssuerSuspended
-- CertificateNotFound
-- CertificateAlreadyRevoked
-- NotCertificateIssuer
-- InvalidInput
-
-(Concrete revert strings in Solidity may differ; align naming in a later refactor.)
+- `NotOwner`
+- `UnauthorizedIssuer`
+- `InvalidIssuerAddress`
+- `IssuerAlreadyRegistered`
+- `IssuerNotFound`
+- `InvalidCertificateId`
+- `InvalidClaimsHash`
+- `InvalidRecipientCommitment`
+- `CertificateAlreadyExists`
+- `CertificateNotFound`
+- `CertificateAlreadyRevoked`
+- `NotCertificateIssuer`
 
 ---
 
@@ -163,50 +158,62 @@ May be added later (not required for MVP logic):
 
 The blockchain verifies:
 
-- Existence of a certificate for the given **`document_hash`**
-- Issuer authenticity (read `issuer` from the record)
-- Document integrity: the third party’s hash **is** the lookup key — if the record exists, it matches that file
-- Revocation status
+- **Existence** of a certificate for the given `certificateId`
+- **Integrity**: the `claimsHash` recomputed from the presented credential matches the on-chain record
+- **Issuer authenticity**: the `issuer` address is readable from the record (and can be checked against the authorized issuers registry)
+- **Revocation status**: whether the certificate has been revoked
 
 The blockchain DOES NOT verify:
 
-- Real-world identity (e.g., "Juan Gomez")
+- Real-world identity of the holder
+- Content of the credential claims (only the hash)
 
-Identity is verified through:
+### Verification Flow
 
-- The certificate document itself (PDF)
-- Off-chain validation (e.g., ID check)
+1. Holder presents a credential (structured data, e.g., JSON) to a verifier.
+2. The credential includes the `certificateId` and the full claims.
+3. The verifier recomputes `claimsHash = keccak256(canonicalClaims)`.
+4. The verifier calls `verifyCertificate(certificateId, claimsHash)`.
+5. The verifier checks: `exists && hashMatch && !revoked && issuer is trusted`.
+
+### What a PDF is (and is not)
+
+- A PDF (or any visual document) is an **optional rendering** of the credential.
+- The PDF is NOT the source of truth — the structured credential is.
+- Verification MUST always go through the on-chain record via `certificateId` + `claimsHash`.
 
 ---
 
-## Bulletin Chain Reference
+## Privacy: recipientCommitment
 
-The `file_reference`:
+The `recipientCommitment` field allows the issuer to bind a credential to a specific holder without revealing the holder's identity on-chain.
 
-- Is optional
-- Is treated as an opaque string
-- Is NOT the source of truth
-
-Verification MUST always rely on **`document_hash`** as the primary handle.
+- Computed as, for example: `keccak256(abi.encode(secret, holderIdentifier))`
+- The holder can prove they are the intended recipient by revealing the preimage to the verifier off-chain.
+- The on-chain value alone reveals nothing about the holder.
+- There are no mappings from `recipientCommitment` to certificates, preventing reverse lookups.
 
 ---
 
 ## Design Constraints
 
 - No PII on-chain
-- Minimal storage
+- No public enumeration of certificates
+- No student-to-certificate indexing
+- Minimal storage (5 fields per certificate)
 - Deterministic behavior
-- Simple access control
-- **Verification path:** PDF → hash → on-chain lookup (no hidden ids)
+- Simple access control (owner + authorized issuers)
+- Presentation-based verification path: credential → claimsHash → on-chain lookup
 
 ---
 
 ## Future Extensions (Not MVP)
 
-- Multi-organization validation
-- Decentralized issuer approval
-- DID integration
-- Verifiable credentials
-- Advanced indexing
+- Selective disclosure of credential attributes
+- DID-based issuer resolution
+- Multi-signature issuance or co-signing
+- On-chain credential schema registry
+- Batch issuance
+- Governance-based issuer approval
 
 DO NOT implement these now.

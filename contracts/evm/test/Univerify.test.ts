@@ -6,31 +6,13 @@ import { getAddress, keccak256, parseEventLogs, toBytes } from "viem";
 
 /** Hardhat-viem returns public struct getters as tuples (ABI component order). */
 function readCertificateTuple(raw: readonly unknown[]) {
-	const [
-		issuer,
-		studentIdentifierHash,
-		documentHash,
-		certificateType,
-		issuedOn,
-		metadataHash,
-		fileReference,
-		status,
-		issuedAt,
-		revokedAt,
-		revocationReasonHash,
-	] = raw;
+	const [issuer, claimsHash, recipientCommitment, issuedAt, revoked] = raw;
 	return {
 		issuer: issuer as Address,
-		studentIdentifierHash: studentIdentifierHash as Hex,
-		documentHash: documentHash as Hex,
-		certificateType: certificateType as string,
-		issuedOn: issuedOn as bigint,
-		metadataHash: metadataHash as Hex,
-		fileReference: fileReference as string,
-		status: Number(status),
+		claimsHash: claimsHash as Hex,
+		recipientCommitment: recipientCommitment as Hex,
 		issuedAt: issuedAt as bigint,
-		revokedAt: revokedAt as bigint,
-		revocationReasonHash: revocationReasonHash as Hex,
+		revoked: revoked as boolean,
 	};
 }
 
@@ -43,7 +25,7 @@ function readIssuerProfileTuple(raw: readonly unknown[]) {
 	};
 }
 
-/** Asserts a viem contract write reverted with a Solidity custom error name in the message chain. */
+/** Asserts a viem contract write reverted with a Solidity custom error name. */
 function expectCustomError(err: unknown, errorName: string) {
 	const parts: string[] = [];
 	let cur: unknown = err;
@@ -66,19 +48,15 @@ function expectCustomError(err: unknown, errorName: string) {
 }
 
 describe("Univerify", function () {
-	const studentIdentifierHash = keccak256(toBytes("student-identifier"));
-	const documentHash = keccak256(toBytes("certificate-pdf"));
-	const documentHash2 = keccak256(toBytes("certificate-pdf-2"));
-	const metadataHash = keccak256(toBytes("certificate-metadata"));
+	const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+	const certificateId = keccak256(toBytes("cert-001"));
+	const certificateId2 = keccak256(toBytes("cert-002"));
+	const claimsHash = keccak256(toBytes("canonical-claims-json"));
+	const claimsHash2 = keccak256(toBytes("canonical-claims-json-2"));
+	const recipientCommitment = keccak256(toBytes("recipient-secret-commitment"));
 	const issuerMetadataHash = keccak256(toBytes("issuer-metadata"));
-	const revocationReasonHash = keccak256(toBytes("reason"));
-	const certificateType = "Bachelor of Science";
 
-	/** CertificateStatus: Active = 0, Revoked = 1 */
-	const STATUS_ACTIVE = 0;
-	const STATUS_REVOKED = 1;
-
-	/** IssuerStatus: Active = 0, Suspended = 1 */
 	const ISSUER_ACTIVE = 0;
 	const ISSUER_SUSPENDED = 1;
 
@@ -98,6 +76,8 @@ describe("Univerify", function () {
 		return ctx;
 	}
 
+	// ── Deployment ──────────────────────────────────────────────────────
+
 	describe("Deployment", function () {
 		it("should set deployer as owner", async function () {
 			const { univerify, owner } = await loadFixture(deployFixture);
@@ -107,22 +87,27 @@ describe("Univerify", function () {
 		});
 	});
 
+	// ── Issuer Management ───────────────────────────────────────────────
+
 	describe("Issuer Management", function () {
 		describe("registerIssuer", function () {
 			it("should register a valid issuer", async function () {
 				const { univerify, owner, issuer } = await loadFixture(deployFixture);
-				await univerify.write.registerIssuer([issuer.account.address, issuerMetadataHash], {
-					account: owner.account,
-				});
-				expect(await univerify.read.authorizedIssuers([issuer.account.address])).to.equal(
-					true,
+				await univerify.write.registerIssuer(
+					[issuer.account.address, issuerMetadataHash],
+					{ account: owner.account },
 				);
+				expect(
+					await univerify.read.authorizedIssuers([issuer.account.address]),
+				).to.equal(true);
 				const profile = readIssuerProfileTuple(
 					(await univerify.read.issuerProfiles([
 						issuer.account.address,
 					])) as readonly unknown[],
 				);
-				expect(getAddress(profile.account)).to.equal(getAddress(issuer.account.address));
+				expect(getAddress(profile.account)).to.equal(
+					getAddress(issuer.account.address),
+				);
 				expect(profile.status).to.equal(ISSUER_ACTIVE);
 				expect(profile.metadataHash).to.equal(issuerMetadataHash);
 			});
@@ -131,7 +116,10 @@ describe("Univerify", function () {
 				const { univerify, owner } = await loadFixture(deployFixture);
 				try {
 					await univerify.write.registerIssuer(
-						["0x0000000000000000000000000000000000000000", issuerMetadataHash],
+						[
+							"0x0000000000000000000000000000000000000000",
+							issuerMetadataHash,
+						],
 						{ account: owner.account },
 					);
 					expect.fail("Should have reverted");
@@ -142,36 +130,57 @@ describe("Univerify", function () {
 
 			it("should revert if issuer already registered", async function () {
 				const { univerify, owner, issuer } = await loadFixture(deployFixture);
-				await univerify.write.registerIssuer([issuer.account.address, issuerMetadataHash], {
-					account: owner.account,
-				});
+				await univerify.write.registerIssuer(
+					[issuer.account.address, issuerMetadataHash],
+					{ account: owner.account },
+				);
 				try {
 					await univerify.write.registerIssuer(
 						[issuer.account.address, issuerMetadataHash],
-						{
-							account: owner.account,
-						},
+						{ account: owner.account },
 					);
 					expect.fail("Should have reverted");
 				} catch (e: unknown) {
 					expectCustomError(e, "IssuerAlreadyRegistered");
 				}
 			});
+
+			it("should emit IssuerRegistered event", async function () {
+				const { univerify, owner, issuer, publicClient } =
+					await loadFixture(deployFixture);
+				const txHash = await univerify.write.registerIssuer(
+					[issuer.account.address, issuerMetadataHash],
+					{ account: owner.account },
+				);
+				const receipt = await publicClient.waitForTransactionReceipt({
+					hash: txHash,
+				});
+				const logs = parseEventLogs({
+					abi: univerify.abi,
+					logs: receipt.logs,
+					eventName: "IssuerRegistered",
+				});
+				expect(logs).to.have.lengthOf(1);
+				expect(getAddress(logs[0].args.issuer!)).to.equal(
+					getAddress(issuer.account.address),
+				);
+			});
 		});
 
 		describe("setIssuerStatus", function () {
 			it("should activate/deactivate issuer", async function () {
 				const { univerify, owner, issuer } = await loadFixture(deployFixture);
-				await univerify.write.registerIssuer([issuer.account.address, issuerMetadataHash], {
-					account: owner.account,
-				});
+				await univerify.write.registerIssuer(
+					[issuer.account.address, issuerMetadataHash],
+					{ account: owner.account },
+				);
 
 				await univerify.write.setIssuerStatus([issuer.account.address, false], {
 					account: owner.account,
 				});
-				expect(await univerify.read.authorizedIssuers([issuer.account.address])).to.equal(
-					false,
-				);
+				expect(
+					await univerify.read.authorizedIssuers([issuer.account.address]),
+				).to.equal(false);
 				let profile = readIssuerProfileTuple(
 					(await univerify.read.issuerProfiles([
 						issuer.account.address,
@@ -182,9 +191,9 @@ describe("Univerify", function () {
 				await univerify.write.setIssuerStatus([issuer.account.address, true], {
 					account: owner.account,
 				});
-				expect(await univerify.read.authorizedIssuers([issuer.account.address])).to.equal(
-					true,
-				);
+				expect(
+					await univerify.read.authorizedIssuers([issuer.account.address]),
+				).to.equal(true);
 				profile = readIssuerProfileTuple(
 					(await univerify.read.issuerProfiles([
 						issuer.account.address,
@@ -207,55 +216,58 @@ describe("Univerify", function () {
 		});
 	});
 
+	// ── Certificate Issuance ────────────────────────────────────────────
+
 	describe("Certificate Issuance", function () {
 		describe("issueCertificate", function () {
 			it("should issue a valid certificate", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
+				const { univerify, issuer } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
 				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
+					[certificateId, claimsHash, recipientCommitment],
 					{ account: issuer.account },
 				);
 				const cert = readCertificateTuple(
-					(await univerify.read.certificates([documentHash])) as readonly unknown[],
+					(await univerify.read.certificates([
+						certificateId,
+					])) as readonly unknown[],
 				);
-				expect(cert.documentHash).to.equal(documentHash);
-				expect(getAddress(cert.issuer)).to.equal(getAddress(issuer.account.address));
+				expect(getAddress(cert.issuer)).to.equal(
+					getAddress(issuer.account.address),
+				);
+				expect(cert.claimsHash).to.equal(claimsHash);
+				expect(cert.recipientCommitment).to.equal(recipientCommitment);
+				expect(cert.revoked).to.equal(false);
 			});
 
-			it("should store correct data", async function () {
+			it("should store correct data with block timestamp", async function () {
 				const { univerify, issuer, publicClient } = await loadFixture(
 					deployWithRegisteredIssuer,
 				);
-				const issuedOn = 1_700_000_000n;
 				const txHash = await univerify.write.issueCertificate(
-					[studentIdentifierHash, documentHash, certificateType, issuedOn, metadataHash],
+					[certificateId, claimsHash, recipientCommitment],
 					{ account: issuer.account },
 				);
-				const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-				const block = await publicClient.getBlock({ blockNumber: receipt.blockNumber });
+				const receipt = await publicClient.waitForTransactionReceipt({
+					hash: txHash,
+				});
+				const block = await publicClient.getBlock({
+					blockNumber: receipt.blockNumber,
+				});
 
 				const cert = readCertificateTuple(
-					(await univerify.read.certificates([documentHash])) as readonly unknown[],
+					(await univerify.read.certificates([
+						certificateId,
+					])) as readonly unknown[],
 				);
-				expect(getAddress(cert.issuer)).to.equal(getAddress(issuer.account.address));
-				expect(cert.studentIdentifierHash).to.equal(studentIdentifierHash);
-				expect(cert.documentHash).to.equal(documentHash);
-				expect(cert.certificateType).to.equal(certificateType);
-				expect(cert.issuedOn).to.equal(issuedOn);
-				expect(cert.metadataHash).to.equal(metadataHash);
-				expect(cert.fileReference).to.equal("");
-				expect(cert.status).to.equal(STATUS_ACTIVE);
+				expect(getAddress(cert.issuer)).to.equal(
+					getAddress(issuer.account.address),
+				);
+				expect(cert.claimsHash).to.equal(claimsHash);
+				expect(cert.recipientCommitment).to.equal(recipientCommitment);
 				expect(cert.issuedAt).to.equal(block.timestamp);
-				expect(cert.revokedAt).to.equal(0n);
-				expect(cert.revocationReasonHash).to.equal(
-					"0x0000000000000000000000000000000000000000000000000000000000000000",
-				);
+				expect(cert.revoked).to.equal(false);
 			});
 
 			it("should emit CertificateIssued event", async function () {
@@ -263,41 +275,47 @@ describe("Univerify", function () {
 					deployWithRegisteredIssuer,
 				);
 				const txHash = await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
+					[certificateId, claimsHash, recipientCommitment],
 					{ account: issuer.account },
 				);
-				const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+				const receipt = await publicClient.waitForTransactionReceipt({
+					hash: txHash,
+				});
 				const logs = parseEventLogs({
 					abi: univerify.abi,
 					logs: receipt.logs,
 					eventName: "CertificateIssued",
 				});
 				expect(logs).to.have.lengthOf(1);
-				expect(logs[0].args.documentHash).to.equal(documentHash);
+				expect(logs[0].args.certificateId).to.equal(certificateId);
 				expect(getAddress(logs[0].args.issuer!)).to.equal(
 					getAddress(issuer.account.address),
 				);
+			});
+
+			it("should return the certificateId", async function () {
+				const { univerify, issuer, publicClient } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
+				const result = await publicClient.simulateContract({
+					address: univerify.address,
+					abi: univerify.abi,
+					functionName: "issueCertificate",
+					args: [certificateId, claimsHash, recipientCommitment],
+					account: issuer.account,
+				});
+				expect(result.result).to.equal(certificateId);
 			});
 		});
 
 		describe("failure cases", function () {
 			it("should revert if not authorized issuer", async function () {
-				const { univerify, other } = await loadFixture(deployWithRegisteredIssuer);
+				const { univerify, other } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
 				try {
 					await univerify.write.issueCertificate(
-						[
-							studentIdentifierHash,
-							documentHash,
-							certificateType,
-							1_700_000_000n,
-							metadataHash,
-						],
+						[certificateId, claimsHash, recipientCommitment],
 						{ account: other.account },
 					);
 					expect.fail("Should have reverted");
@@ -306,97 +324,62 @@ describe("Univerify", function () {
 				}
 			});
 
-			it("should revert if document_hash is zero", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
+			it("should revert if certificateId is zero", async function () {
+				const { univerify, issuer } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
 				try {
 					await univerify.write.issueCertificate(
-						[
-							studentIdentifierHash,
-							"0x0000000000000000000000000000000000000000000000000000000000000000",
-							certificateType,
-							1_700_000_000n,
-							metadataHash,
-						],
+						[ZERO_BYTES32, claimsHash, recipientCommitment],
 						{ account: issuer.account },
 					);
 					expect.fail("Should have reverted");
 				} catch (e: unknown) {
-					expectCustomError(e, "InvalidDocumentHash");
+					expectCustomError(e, "InvalidCertificateId");
 				}
 			});
 
-			it("should revert if student_identifier_hash is zero", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
+			it("should revert if claimsHash is zero", async function () {
+				const { univerify, issuer } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
 				try {
 					await univerify.write.issueCertificate(
-						[
-							"0x0000000000000000000000000000000000000000000000000000000000000000",
-							documentHash,
-							certificateType,
-							1_700_000_000n,
-							metadataHash,
-						],
+						[certificateId, ZERO_BYTES32, recipientCommitment],
 						{ account: issuer.account },
 					);
 					expect.fail("Should have reverted");
 				} catch (e: unknown) {
-					expectCustomError(e, "InvalidStudentIdentifierHash");
+					expectCustomError(e, "InvalidClaimsHash");
 				}
 			});
 
-			it("should revert if metadata_hash is zero", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
+			it("should revert if recipientCommitment is zero", async function () {
+				const { univerify, issuer } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
 				try {
 					await univerify.write.issueCertificate(
-						[
-							studentIdentifierHash,
-							documentHash,
-							certificateType,
-							1_700_000_000n,
-							"0x0000000000000000000000000000000000000000000000000000000000000000",
-						],
+						[certificateId, claimsHash, ZERO_BYTES32],
 						{ account: issuer.account },
 					);
 					expect.fail("Should have reverted");
 				} catch (e: unknown) {
-					expectCustomError(e, "InvalidMetadataHash");
-				}
-			});
-
-			it("should revert if certificate_type is empty", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
-				try {
-					await univerify.write.issueCertificate(
-						[studentIdentifierHash, documentHash, "", 1_700_000_000n, metadataHash],
-						{ account: issuer.account },
-					);
-					expect.fail("Should have reverted");
-				} catch (e: unknown) {
-					expectCustomError(e, "EmptyCertificateType");
+					expectCustomError(e, "InvalidRecipientCommitment");
 				}
 			});
 
 			it("should revert if certificate already exists", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
+				const { univerify, issuer } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
 				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
+					[certificateId, claimsHash, recipientCommitment],
 					{ account: issuer.account },
 				);
 				try {
 					await univerify.write.issueCertificate(
-						[
-							studentIdentifierHash,
-							documentHash,
-							certificateType,
-							1_700_000_000n,
-							metadataHash,
-						],
+						[certificateId, claimsHash2, recipientCommitment],
 						{ account: issuer.account },
 					);
 					expect.fail("Should have reverted");
@@ -407,106 +390,161 @@ describe("Univerify", function () {
 		});
 	});
 
-	describe("Certificate Retrieval", function () {
-		it("should retrieve certificate by document_hash", async function () {
-			const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
-			await univerify.write.issueCertificate(
-				[
-					studentIdentifierHash,
-					documentHash,
-					certificateType,
-					1_700_000_000n,
-					metadataHash,
-				],
-				{ account: issuer.account },
-			);
-			const cert = readCertificateTuple(
-				(await univerify.read.certificates([documentHash])) as readonly unknown[],
-			);
-			expect(cert.documentHash).to.equal(documentHash);
+	// ── Verification ────────────────────────────────────────────────────
+
+	describe("Verification", function () {
+		it("should return exists=false for unknown certificateId", async function () {
+			const { univerify } = await loadFixture(deployWithRegisteredIssuer);
+			const [exists, issuer, hashMatch, revoked, issuedAt] =
+				(await univerify.read.verifyCertificate([
+					certificateId,
+					claimsHash,
+				])) as readonly [boolean, Address, boolean, boolean, bigint];
+			expect(exists).to.equal(false);
+			expect(issuer).to.equal("0x0000000000000000000000000000000000000000");
+			expect(hashMatch).to.equal(false);
+			expect(revoked).to.equal(false);
+			expect(issuedAt).to.equal(0n);
 		});
 
-		it("should return correct issuer and status", async function () {
-			const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
+		it("should return hashMatch=true when claimsHash matches", async function () {
+			const { univerify, issuer } = await loadFixture(
+				deployWithRegisteredIssuer,
+			);
 			await univerify.write.issueCertificate(
-				[
-					studentIdentifierHash,
-					documentHash,
-					certificateType,
-					1_700_000_000n,
-					metadataHash,
-				],
+				[certificateId, claimsHash, recipientCommitment],
+				{ account: issuer.account },
+			);
+			const [exists, certIssuer, hashMatch, revoked] =
+				(await univerify.read.verifyCertificate([
+					certificateId,
+					claimsHash,
+				])) as readonly [boolean, Address, boolean, boolean, bigint];
+			expect(exists).to.equal(true);
+			expect(getAddress(certIssuer)).to.equal(
+				getAddress(issuer.account.address),
+			);
+			expect(hashMatch).to.equal(true);
+			expect(revoked).to.equal(false);
+		});
+
+		it("should return hashMatch=false when claimsHash does not match", async function () {
+			const { univerify, issuer } = await loadFixture(
+				deployWithRegisteredIssuer,
+			);
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, recipientCommitment],
+				{ account: issuer.account },
+			);
+			const wrongHash = keccak256(toBytes("tampered-claims"));
+			const [exists, , hashMatch] = (await univerify.read.verifyCertificate([
+				certificateId,
+				wrongHash,
+			])) as readonly [boolean, Address, boolean, boolean, bigint];
+			expect(exists).to.equal(true);
+			expect(hashMatch).to.equal(false);
+		});
+
+		it("should return revoked=true after revocation", async function () {
+			const { univerify, issuer } = await loadFixture(
+				deployWithRegisteredIssuer,
+			);
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, recipientCommitment],
+				{ account: issuer.account },
+			);
+			await univerify.write.revokeCertificate([certificateId], {
+				account: issuer.account,
+			});
+			const [exists, , hashMatch, revoked] =
+				(await univerify.read.verifyCertificate([
+					certificateId,
+					claimsHash,
+				])) as readonly [boolean, Address, boolean, boolean, bigint];
+			expect(exists).to.equal(true);
+			expect(hashMatch).to.equal(true);
+			expect(revoked).to.equal(true);
+		});
+
+		it("should retrieve certificate by certificateId via public mapping", async function () {
+			const { univerify, issuer } = await loadFixture(
+				deployWithRegisteredIssuer,
+			);
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, recipientCommitment],
 				{ account: issuer.account },
 			);
 			const cert = readCertificateTuple(
-				(await univerify.read.certificates([documentHash])) as readonly unknown[],
+				(await univerify.read.certificates([
+					certificateId,
+				])) as readonly unknown[],
 			);
-			expect(getAddress(cert.issuer)).to.equal(getAddress(issuer.account.address));
-			expect(cert.status).to.equal(STATUS_ACTIVE);
+			expect(getAddress(cert.issuer)).to.equal(
+				getAddress(issuer.account.address),
+			);
+			expect(cert.claimsHash).to.equal(claimsHash);
+			expect(cert.revoked).to.equal(false);
 		});
 	});
+
+	// ── Revocation ──────────────────────────────────────────────────────
 
 	describe("Revocation", function () {
 		describe("revokeCertificate", function () {
 			it("should allow issuer to revoke certificate", async function () {
+				const { univerify, issuer } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
+				await univerify.write.issueCertificate(
+					[certificateId, claimsHash, recipientCommitment],
+					{ account: issuer.account },
+				);
+				await univerify.write.revokeCertificate([certificateId], {
+					account: issuer.account,
+				});
+				const cert = readCertificateTuple(
+					(await univerify.read.certificates([
+						certificateId,
+					])) as readonly unknown[],
+				);
+				expect(cert.revoked).to.equal(true);
+			});
+
+			it("should emit CertificateRevoked event", async function () {
 				const { univerify, issuer, publicClient } = await loadFixture(
 					deployWithRegisteredIssuer,
 				);
 				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
+					[certificateId, claimsHash, recipientCommitment],
 					{ account: issuer.account },
 				);
 				const txHash = await univerify.write.revokeCertificate(
-					[documentHash, revocationReasonHash],
-					{
-						account: issuer.account,
-					},
-				);
-				const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-				const block = await publicClient.getBlock({ blockNumber: receipt.blockNumber });
-				const cert = readCertificateTuple(
-					(await univerify.read.certificates([documentHash])) as readonly unknown[],
-				);
-				expect(cert.status).to.equal(STATUS_REVOKED);
-				expect(cert.revokedAt).to.equal(block.timestamp);
-				expect(cert.revocationReasonHash).to.equal(revocationReasonHash);
-			});
-
-			it("should update status to Revoked", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
-				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
+					[certificateId],
 					{ account: issuer.account },
 				);
-				await univerify.write.revokeCertificate([documentHash, revocationReasonHash], {
-					account: issuer.account,
+				const receipt = await publicClient.waitForTransactionReceipt({
+					hash: txHash,
 				});
-				const cert = readCertificateTuple(
-					(await univerify.read.certificates([documentHash])) as readonly unknown[],
+				const logs = parseEventLogs({
+					abi: univerify.abi,
+					logs: receipt.logs,
+					eventName: "CertificateRevoked",
+				});
+				expect(logs).to.have.lengthOf(1);
+				expect(logs[0].args.certificateId).to.equal(certificateId);
+				expect(getAddress(logs[0].args.issuer!)).to.equal(
+					getAddress(issuer.account.address),
 				);
-				expect(cert.status).to.equal(STATUS_REVOKED);
 			});
-
-			// No CertificateRevoked event in the contract — nothing to assert here.
 		});
 
 		describe("failure cases", function () {
 			it("should revert if certificate does not exist", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
+				const { univerify, issuer } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
 				try {
-					await univerify.write.revokeCertificate([documentHash, revocationReasonHash], {
+					await univerify.write.revokeCertificate([certificateId], {
 						account: issuer.account,
 					});
 					expect.fail("Should have reverted");
@@ -516,22 +554,18 @@ describe("Univerify", function () {
 			});
 
 			it("should revert if already revoked", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
+				const { univerify, issuer } = await loadFixture(
+					deployWithRegisteredIssuer,
+				);
 				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
+					[certificateId, claimsHash, recipientCommitment],
 					{ account: issuer.account },
 				);
-				await univerify.write.revokeCertificate([documentHash, revocationReasonHash], {
+				await univerify.write.revokeCertificate([certificateId], {
 					account: issuer.account,
 				});
 				try {
-					await univerify.write.revokeCertificate([documentHash, revocationReasonHash], {
+					await univerify.write.revokeCertificate([certificateId], {
 						account: issuer.account,
 					});
 					expect.fail("Should have reverted");
@@ -540,25 +574,20 @@ describe("Univerify", function () {
 				}
 			});
 
-			it("should revert if caller is not issuer", async function () {
+			it("should revert if caller is not the original issuer", async function () {
 				const { univerify, issuer, other, owner } = await loadFixture(
 					deployWithRegisteredIssuer,
 				);
-				await univerify.write.registerIssuer([other.account.address, issuerMetadataHash], {
-					account: owner.account,
-				});
+				await univerify.write.registerIssuer(
+					[other.account.address, issuerMetadataHash],
+					{ account: owner.account },
+				);
 				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
+					[certificateId, claimsHash, recipientCommitment],
 					{ account: issuer.account },
 				);
 				try {
-					await univerify.write.revokeCertificate([documentHash, revocationReasonHash], {
+					await univerify.write.revokeCertificate([certificateId], {
 						account: other.account,
 					});
 					expect.fail("Should have reverted");
@@ -569,151 +598,16 @@ describe("Univerify", function () {
 		});
 	});
 
-	describe("File Reference", function () {
-		const fileRef = "ipfs://QmExample";
-
-		describe("attachFileReference", function () {
-			it("should allow issuer to attach file reference", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
-				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
-					{ account: issuer.account },
-				);
-				await univerify.write.attachFileReference([documentHash, fileRef], {
-					account: issuer.account,
-				});
-				const cert = readCertificateTuple(
-					(await univerify.read.certificates([documentHash])) as readonly unknown[],
-				);
-				expect(cert.fileReference).to.equal(fileRef);
-			});
-
-			it("should update field correctly", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
-				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash2,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
-					{ account: issuer.account },
-				);
-				await univerify.write.attachFileReference([documentHash2, fileRef], {
-					account: issuer.account,
-				});
-				const c2 = readCertificateTuple(
-					(await univerify.read.certificates([documentHash2])) as readonly unknown[],
-				);
-				expect(c2.fileReference).to.equal(fileRef);
-			});
-
-			it("should emit event", async function () {
-				const { univerify, issuer, publicClient } = await loadFixture(
-					deployWithRegisteredIssuer,
-				);
-				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
-					{ account: issuer.account },
-				);
-				const txHash = await univerify.write.attachFileReference([documentHash, fileRef], {
-					account: issuer.account,
-				});
-				const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-				const logs = parseEventLogs({
-					abi: univerify.abi,
-					logs: receipt.logs,
-					eventName: "FileReferenceAttached",
-				});
-				expect(logs).to.have.lengthOf(1);
-				expect(logs[0].args.documentHash).to.equal(documentHash);
-			});
-		});
-
-		describe("failure cases", function () {
-			it("should revert if certificate does not exist", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
-				try {
-					await univerify.write.attachFileReference([documentHash, fileRef], {
-						account: issuer.account,
-					});
-					expect.fail("Should have reverted");
-				} catch (e: unknown) {
-					expectCustomError(e, "CertificateNotFound");
-				}
-			});
-
-			it("should revert if caller is not issuer", async function () {
-				const { univerify, issuer, other, owner } = await loadFixture(
-					deployWithRegisteredIssuer,
-				);
-				await univerify.write.registerIssuer([other.account.address, issuerMetadataHash], {
-					account: owner.account,
-				});
-				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
-					{ account: issuer.account },
-				);
-				try {
-					await univerify.write.attachFileReference([documentHash, fileRef], {
-						account: other.account,
-					});
-					expect.fail("Should have reverted");
-				} catch (e: unknown) {
-					expectCustomError(e, "NotCertificateIssuer");
-				}
-			});
-
-			it("should revert if empty reference", async function () {
-				const { univerify, issuer } = await loadFixture(deployWithRegisteredIssuer);
-				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
-					{ account: issuer.account },
-				);
-				try {
-					await univerify.write.attachFileReference([documentHash, ""], {
-						account: issuer.account,
-					});
-					expect.fail("Should have reverted");
-				} catch (e: unknown) {
-					expectCustomError(e, "EmptyFileReference");
-				}
-			});
-		});
-	});
+	// ── Access Control ──────────────────────────────────────────────────
 
 	describe("Access Control", function () {
 		it("only owner can register issuer", async function () {
 			const { univerify, issuer, other } = await loadFixture(deployFixture);
 			try {
-				await univerify.write.registerIssuer([other.account.address, issuerMetadataHash], {
-					account: issuer.account,
-				});
+				await univerify.write.registerIssuer(
+					[other.account.address, issuerMetadataHash],
+					{ account: issuer.account },
+				);
 				expect.fail("Should have reverted");
 			} catch (e: unknown) {
 				expectCustomError(e, "NotOwner");
@@ -721,14 +615,16 @@ describe("Univerify", function () {
 		});
 
 		it("only owner can change issuer status", async function () {
-			const { univerify, issuer, other, owner } = await loadFixture(deployFixture);
-			await univerify.write.registerIssuer([issuer.account.address, issuerMetadataHash], {
-				account: owner.account,
-			});
+			const { univerify, issuer, owner } = await loadFixture(deployFixture);
+			await univerify.write.registerIssuer(
+				[issuer.account.address, issuerMetadataHash],
+				{ account: owner.account },
+			);
 			try {
-				await univerify.write.setIssuerStatus([issuer.account.address, false], {
-					account: issuer.account,
-				});
+				await univerify.write.setIssuerStatus(
+					[issuer.account.address, false],
+					{ account: issuer.account },
+				);
 				expect.fail("Should have reverted");
 			} catch (e: unknown) {
 				expectCustomError(e, "NotOwner");
@@ -739,19 +635,48 @@ describe("Univerify", function () {
 			const { univerify, other } = await loadFixture(deployFixture);
 			try {
 				await univerify.write.issueCertificate(
-					[
-						studentIdentifierHash,
-						documentHash,
-						certificateType,
-						1_700_000_000n,
-						metadataHash,
-					],
+					[certificateId, claimsHash, recipientCommitment],
 					{ account: other.account },
 				);
 				expect.fail("Should have reverted");
 			} catch (e: unknown) {
 				expectCustomError(e, "UnauthorizedIssuer");
 			}
+		});
+
+		it("suspended issuer cannot issue certificates", async function () {
+			const { univerify, owner, issuer } = await loadFixture(
+				deployWithRegisteredIssuer,
+			);
+			await univerify.write.setIssuerStatus([issuer.account.address, false], {
+				account: owner.account,
+			});
+			try {
+				await univerify.write.issueCertificate(
+					[certificateId, claimsHash, recipientCommitment],
+					{ account: issuer.account },
+				);
+				expect.fail("Should have reverted");
+			} catch (e: unknown) {
+				expectCustomError(e, "UnauthorizedIssuer");
+			}
+		});
+	});
+
+	// ── Privacy: No Public Enumeration ──────────────────────────────────
+
+	describe("Privacy", function () {
+		it("should not expose any enumeration or listing functions", async function () {
+			const { univerify } = await loadFixture(deployFixture);
+			const abi = univerify.abi;
+			const fnNames = abi
+				.filter((item: { type: string }) => item.type === "function")
+				.map((item: { name: string }) => item.name);
+
+			expect(fnNames).to.not.include("getClaimCount");
+			expect(fnNames).to.not.include("getClaimHashAtIndex");
+			expect(fnNames).to.not.include("getCertificatesByStudent");
+			expect(fnNames).to.not.include("getAllCertificates");
 		});
 	});
 });
