@@ -3,6 +3,13 @@ import { expect } from "chai";
 import hre from "hardhat";
 import type { Address, Hex } from "viem";
 import { getAddress, keccak256, parseEventLogs, toBytes } from "viem";
+import {
+	computeClaimsHash,
+	deriveCertificateId,
+	computeRecipientCommitment,
+	buildCredential,
+	type CredentialClaims,
+} from "../src/credential";
 
 /** Hardhat-viem returns public struct getters as tuples (ABI component order). */
 function readCertificateTuple(raw: readonly unknown[]) {
@@ -677,6 +684,116 @@ describe("Univerify", function () {
 			expect(fnNames).to.not.include("getClaimHashAtIndex");
 			expect(fnNames).to.not.include("getCertificatesByStudent");
 			expect(fnNames).to.not.include("getAllCertificates");
+		});
+	});
+
+	// ── End-to-End: Canonical Hashing ───────────────────────────────────
+
+	describe("End-to-End with canonical credential hashing", function () {
+		const sampleClaims: CredentialClaims = {
+			degreeTitle: "Bachelor of Computer Science",
+			holderName: "Maria Garcia",
+			institutionName: "Universidad de Buenos Aires",
+			issuanceDate: "2026-03-15",
+		};
+		const internalRef = "UBA-CS-2026-00142";
+		const secret = keccak256(toBytes("holder-secret-entropy"));
+		const holderIdentifier = "maria.garcia@uba.edu";
+
+		it("should issue and verify using buildCredential helper", async function () {
+			const { univerify, issuer } = await loadFixture(
+				deployWithRegisteredIssuer,
+			);
+
+			const { certificateId, claimsHash, recipientCommitment } =
+				buildCredential({
+					issuer: issuer.account.address,
+					internalRef,
+					claims: sampleClaims,
+					secret,
+					holderIdentifier,
+				});
+
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, recipientCommitment],
+				{ account: issuer.account },
+			);
+
+			const [exists, certIssuer, hashMatch, revoked, issuedAt] =
+				(await univerify.read.verifyCertificate([
+					certificateId,
+					claimsHash,
+				])) as readonly [boolean, Address, boolean, boolean, bigint];
+
+			expect(exists).to.equal(true);
+			expect(hashMatch).to.equal(true);
+			expect(revoked).to.equal(false);
+			expect(getAddress(certIssuer)).to.equal(
+				getAddress(issuer.account.address),
+			);
+			expect(issuedAt > 0n).to.equal(true);
+		});
+
+		it("should detect tampered claims via hash mismatch", async function () {
+			const { univerify, issuer } = await loadFixture(
+				deployWithRegisteredIssuer,
+			);
+
+			const { certificateId, claimsHash, recipientCommitment } =
+				buildCredential({
+					issuer: issuer.account.address,
+					internalRef,
+					claims: sampleClaims,
+					secret,
+					holderIdentifier,
+				});
+
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, recipientCommitment],
+				{ account: issuer.account },
+			);
+
+			const tamperedHash = computeClaimsHash({
+				...sampleClaims,
+				degreeTitle: "Master of Computer Science",
+			});
+
+			const [exists, , hashMatch] =
+				(await univerify.read.verifyCertificate([
+					certificateId,
+					tamperedHash,
+				])) as readonly [boolean, Address, boolean, boolean, bigint];
+
+			expect(exists).to.equal(true);
+			expect(hashMatch).to.equal(false);
+		});
+
+		it("should produce deterministic hashes for identical claims", function () {
+			const hash1 = computeClaimsHash(sampleClaims);
+			const hash2 = computeClaimsHash({ ...sampleClaims });
+			expect(hash1).to.equal(hash2);
+		});
+
+		it("should produce different hashes for different claims", function () {
+			const hash1 = computeClaimsHash(sampleClaims);
+			const hash2 = computeClaimsHash({
+				...sampleClaims,
+				holderName: "Juan Perez",
+			});
+			expect(hash1).to.not.equal(hash2);
+		});
+
+		it("should produce different certificateIds for different refs", function () {
+			const addr = "0x0000000000000000000000000000000000000001" as Hex;
+			const id1 = deriveCertificateId(addr, "REF-001");
+			const id2 = deriveCertificateId(addr, "REF-002");
+			expect(id1).to.not.equal(id2);
+		});
+
+		it("should produce different commitments for different holders", function () {
+			const c1 = computeRecipientCommitment(secret, "alice@uni.edu");
+			const c2 = computeRecipientCommitment(secret, "bob@uni.edu");
+			expect(c1).to.not.equal(c2);
 		});
 	});
 });
