@@ -9,5 +9,5 @@
     "resolveJsonModule": true,
     "rootDir": "."
   },
-  "include": ["scripts", "test", "hardhat.config.ts"]
+  "include": ["scripts", "test", "src", "hardhat.config.ts"]
 }
