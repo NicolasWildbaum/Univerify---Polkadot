@@ -1,0 +1,21 @@
+{
+	"_comment": "Template for the `polkadotTestnet` genesis config. Copy this file to genesis-testnet.json (gitignored) and fill it in before running `npm run deploy:univerify:testnet`. Replace each `account` with the real Ethereum address of the university. `metadataHash` should be the keccak256 of the institution's off-chain metadata document (DID doc, IPFS CID, etc.), or 0x00..00 if none. `approvalThreshold` must satisfy 1 <= threshold <= issuers.length.",
+	"approvalThreshold": 2,
+	"issuers": [
+		{
+			"account": "0x0000000000000000000000000000000000000001",
+			"name": "UDELAR",
+			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+		},
+		{
+			"account": "0x0000000000000000000000000000000000000002",
+			"name": "University of Montevideo",
+			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+		},
+		{
+			"account": "0x0000000000000000000000000000000000000003",
+			"name": "University ORT",
+			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+		}
+	]
+}

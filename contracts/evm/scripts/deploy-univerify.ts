@@ -1,9 +1,26 @@
 import hre from "hardhat";
 import * as fs from "fs";
 import * as path from "path";
+import { isAddress, isHex, size, type Address, type Hex } from "viem";
 
-const DEPLOYMENTS_JSON = path.resolve(__dirname, "../../../deployments.json");
-const DEPLOYMENTS_TS = path.resolve(__dirname, "../../../web/src/config/deployments.ts");
+const REPO_ROOT = path.resolve(__dirname, "../../..");
+const DEPLOYMENTS_JSON = path.join(REPO_ROOT, "deployments.json");
+const DEPLOYMENTS_TS = path.join(REPO_ROOT, "web/src/config/deployments.ts");
+const CONFIG_DIR = path.resolve(__dirname, "../config");
+
+// Must match Univerify.sol `MAX_NAME_LENGTH` exactly.
+const MAX_NAME_LENGTH = 64;
+
+interface GenesisIssuerConfig {
+	account: string;
+	name: string;
+	metadataHash: string;
+}
+
+interface GenesisConfig {
+	approvalThreshold: number;
+	issuers: GenesisIssuerConfig[];
+}
 
 interface Deployments {
 	evm: string | null;
@@ -11,12 +28,92 @@ interface Deployments {
 	univerify: string | null;
 }
 
+function loadGenesisConfig(networkName: string): GenesisConfig {
+	const file = path.join(CONFIG_DIR, `genesis-${networkName}.json`);
+	if (!fs.existsSync(file)) {
+		throw new Error(
+			`Genesis config not found at ${file}.\n` +
+				`Copy contracts/evm/config/genesis-${networkName}.example.json to ` +
+				`genesis-${networkName}.json and fill in the real issuer set.`,
+		);
+	}
+
+	let raw: unknown;
+	try {
+		raw = JSON.parse(fs.readFileSync(file, "utf-8"));
+	} catch (e) {
+		throw new Error(`${file}: invalid JSON — ${(e as Error).message}`);
+	}
+	if (!raw || typeof raw !== "object") {
+		throw new Error(`${file}: expected a JSON object at the top level.`);
+	}
+
+	const cfg = raw as GenesisConfig;
+
+	if (!Number.isInteger(cfg.approvalThreshold) || cfg.approvalThreshold < 1) {
+		throw new Error(
+			`${file}: "approvalThreshold" must be a positive integer (got ${JSON.stringify(
+				cfg.approvalThreshold,
+			)}).`,
+		);
+	}
+	if (!Array.isArray(cfg.issuers) || cfg.issuers.length === 0) {
+		throw new Error(`${file}: "issuers" must be a non-empty array.`);
+	}
+	if (cfg.approvalThreshold > cfg.issuers.length) {
+		throw new Error(
+			`${file}: approvalThreshold (${cfg.approvalThreshold}) must not exceed issuers.length (${cfg.issuers.length}).`,
+		);
+	}
+
+	const seen = new Set<string>();
+	cfg.issuers.forEach((issuer, i) => {
+		if (!issuer || typeof issuer !== "object") {
+			throw new Error(`${file}: issuers[${i}] must be an object.`);
+		}
+		if (!isAddress(issuer.account)) {
+			throw new Error(
+				`${file}: issuers[${i}].account is not a valid Ethereum address (got ${JSON.stringify(
+					issuer.account,
+				)}).`,
+			);
+		}
+		const lower = issuer.account.toLowerCase();
+		if (seen.has(lower)) {
+			throw new Error(
+				`${file}: issuers[${i}].account (${issuer.account}) duplicates an earlier entry.`,
+			);
+		}
+		seen.add(lower);
+
+		if (typeof issuer.name !== "string" || issuer.name.length === 0) {
+			throw new Error(`${file}: issuers[${i}].name must be a non-empty string.`);
+		}
+		const nameBytes = Buffer.byteLength(issuer.name, "utf8");
+		if (nameBytes > MAX_NAME_LENGTH) {
+			throw new Error(
+				`${file}: issuers[${i}].name is ${nameBytes} bytes; the contract caps it at ${MAX_NAME_LENGTH}.`,
+			);
+		}
+
+		if (!isHex(issuer.metadataHash) || size(issuer.metadataHash as Hex) !== 32) {
+			throw new Error(
+				`${file}: issuers[${i}].metadataHash must be a 0x-prefixed 32-byte value (got ${JSON.stringify(
+					issuer.metadataHash,
+				)}).`,
+			);
+		}
+	});
+
+	return cfg;
+}
+
 function updateDeployments(address: string) {
 	let data: Deployments = { evm: null, pvm: null, univerify: null };
 	try {
 		data = { ...data, ...JSON.parse(fs.readFileSync(DEPLOYMENTS_JSON, "utf-8")) };
 	} catch {
-		// File doesn't exist yet
+		// File doesn't exist yet — the default above is the seed.
 	}
 	data.univerify = address;
 
@@ -34,47 +131,47 @@ export const deployments: { evm: string | null; pvm: string | null; univerify: s
 }
 
 async function main() {
-	console.log("Deploying Univerify...");
+	const networkName = hre.network.name;
+	console.log(`Deploying Univerify to network: ${networkName}`);
+
+	const config = loadGenesisConfig(networkName);
+	console.log(
+		`Loaded genesis: ${config.issuers.length} issuer(s), approvalThreshold=${config.approvalThreshold}`,
+	);
+	for (const issuer of config.issuers) {
+		console.log(`  - ${issuer.name} (${issuer.account})`);
+	}
 
 	const [walletClient] = await hre.viem.getWalletClients();
 	const publicClient = await hre.viem.getPublicClient();
 	const artifact = await hre.artifacts.readArtifact("Univerify");
 
+	const genesisArg = config.issuers.map((i) => ({
+		account: i.account as Address,
+		name: i.name,
+		metadataHash: i.metadataHash as Hex,
+	}));
+
 	const hash = await walletClient.deployContract({
 		abi: artifact.abi,
-		bytecode: artifact.bytecode as `0x${string}`,
+		bytecode: artifact.bytecode as Hex,
+		args: [genesisArg, config.approvalThreshold],
 	});
 
 	const receipt = await publicClient.waitForTransactionReceipt({
 		hash,
 		timeout: 120_000,
 	});
-
 	if (!receipt.contractAddress) {
 		throw new Error(`Deploy tx ${hash} did not create a contract`);
 	}
 
 	const contractAddress = receipt.contractAddress;
 	console.log(`Univerify deployed to: ${contractAddress}`);
-
-	// Register the deployer (Alice) as an authorized issuer for dev convenience
-	const deployer = walletClient.account.address;
-	console.log(`Registering deployer ${deployer} as authorized issuer...`);
-
-	const issuerMetadataHash =
-		"0x0000000000000000000000000000000000000000000000000000000000000001" as `0x${string}`;
-
-	const regHash = await walletClient.writeContract({
-		address: contractAddress,
-		abi: artifact.abi,
-		functionName: "registerIssuer",
-		args: [deployer, issuerMetadataHash],
-	});
-	await publicClient.waitForTransactionReceipt({ hash: regHash, timeout: 120_000 });
-	console.log("Deployer registered as issuer.");
+	console.log(`Owner (deployer): ${walletClient.account.address}`);
 
 	updateDeployments(contractAddress);
-	console.log("Updated deployments.json and deployments.ts");
+	console.log("Updated deployments.json and web/src/config/deployments.ts");
 }
 
 main().catch((error) => {

@@ -38,5 +38,13 @@ contracts/*/typechain-types/
 contracts/*/ignition/deployments/
 **/chain_spec.json
 
+# Univerify genesis configs — network-specific copies stay local.
+# The `local` config is checked in (dev convenience); per-operator
+# configs (e.g. genesis-testnet.json) are copied from the .example
+# template and kept out of git.
+contracts/evm/config/genesis-*.json
+!contracts/evm/config/genesis-local.json
+!contracts/evm/config/genesis-*.example.json
+
 # Polkadot SDK binaries (downloaded by scripts into repo-local bin/)
 /bin/
