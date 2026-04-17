@@ -66,6 +66,10 @@ echo "  Deploying ProofOfExistence via PVM (resolc)..."
 cd "$ROOT_DIR/contracts/pvm"
 npm run deploy:local
 
+echo "  Deploying Univerify (federated registry, EVM/solc)..."
+cd "$ROOT_DIR/contracts/evm"
+npm run deploy:univerify:local
+
 cd "$ROOT_DIR"
 
 echo "[7/8] Building CLI..."

@@ -80,6 +80,7 @@ wait_for_eth_rpc
 echo "[6/7] Deploying contracts..."
 cd "$ROOT_DIR/contracts/evm" && npm run deploy:local
 cd "$ROOT_DIR/contracts/pvm" && npm run deploy:local
+cd "$ROOT_DIR/contracts/evm" && npm run deploy:univerify:local
 cd "$ROOT_DIR"
 
 echo "[7/7] Running tests..."
