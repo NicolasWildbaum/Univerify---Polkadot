@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @title Univerify — Verifiable Academic Credential Registry
-/// @notice Authorized issuers register certificate records on-chain (existence,
-///         integrity, issuer, and revocation status). Verification is
-///         presentation-based: a holder presents their credential off-chain and
-///         a verifier checks the on-chain record using the certificateId and
-///         claimsHash. No PII or student identity is stored on-chain.
+/// @title Univerify — Federated Academic Credential Registry
+/// @notice Issuers are universities. A small set of **genesis** universities is
+///         activated at deployment; new universities self-apply and enter a
+///         pending waitlist. A candidate becomes Active once it is approved by
+///         at least `approvalThreshold` already-Active universities. Only
+///         Active universities can issue or revoke certificates.
+///
+///         The contract owner has a minimal, emergency-only surface: suspend
+///         and unsuspend an issuer, and transfer ownership. The owner cannot
+///         register, approve, force-activate, or remove universities.
+///
+///         Verification is presentation-based: a verifier recomputes
+///         `claimsHash` off-chain and calls `verifyCertificate`. No PII or
+///         holder identity is stored on-chain.
 contract Univerify {
+	// ── Types ───────────────────────────────────────────────────────────
+
 	/// @notice On-chain representation of an academic credential.
-	/// @dev The mapping key (`certificateId`) is generated off-chain by the
-	///      issuer. The `claimsHash` is a deterministic hash of the canonical
-	///      credential claims. The `recipientCommitment` is a privacy-preserving
-	///      binding to the holder (e.g., hash of a secret + holder identifier).
 	struct Certificate {
 		address issuer;
 		bytes32 claimsHash;
@@ -21,24 +27,54 @@ contract Univerify {
 		bool revoked;
 	}
 
+	/// @notice Lifecycle of an issuing university.
+	/// @dev `None` is the default (zero) value so an unknown address reads as
+	///      `None` without an extra sentinel check.
 	enum IssuerStatus {
+		None,
+		Pending,
 		Active,
 		Suspended
 	}
 
-	struct IssuerProfile {
+	/// @notice Full on-chain profile of an issuing university.
+	/// @dev `name` is kept on-chain to make the waitlist and verification UIs
+	///      self-contained without requiring an off-chain metadata resolver.
+	///      Its length is bounded by `MAX_NAME_LENGTH` to cap storage cost.
+	struct Issuer {
 		address account;
 		IssuerStatus status;
+		bytes32 metadataHash;
+		string name;
+		uint64 registeredAt;
+		uint32 approvalCount;
+	}
+
+	/// @notice Constructor-only descriptor for a genesis university.
+	struct GenesisIssuer {
+		address account;
+		string name;
 		bytes32 metadataHash;
 	}
 
 	// ── Errors ──────────────────────────────────────────────────────────
 
 	error NotOwner();
-	error UnauthorizedIssuer();
-	error InvalidIssuerAddress();
-	error IssuerAlreadyRegistered();
+	error NotActiveIssuer();
+
+	error ZeroAddress();
+	error EmptyName();
+	error NameTooLong();
+	error IssuerAlreadyExists();
 	error IssuerNotFound();
+	error IssuerNotPending();
+	error IssuerNotActive();
+	error IssuerNotSuspended();
+	error CannotApproveSelf();
+	error AlreadyApproved();
+
+	error InvalidThreshold();
+	error InvalidGenesis();
 
 	error InvalidCertificateId();
 	error InvalidClaimsHash();
@@ -48,82 +84,188 @@ contract Univerify {
 	error CertificateAlreadyRevoked();
 	error NotCertificateIssuer();
 
+	// ── Constants ───────────────────────────────────────────────────────
+
+	/// @notice Maximum byte length of an issuer's on-chain `name`.
+	/// @dev Keeps storage bounded and protects against pathological names.
+	uint256 public constant MAX_NAME_LENGTH = 64;
+
 	// ── State ───────────────────────────────────────────────────────────
 
+	/// @notice Minimum number of approvals from Active universities required
+	///         to promote a Pending applicant to Active. Set once at deploy.
+	uint32 public immutable approvalThreshold;
+
+	/// @notice Emergency-only administrator. Can suspend / unsuspend issuers
+	///         and transfer ownership. Cannot register, approve, or issue.
 	address public owner;
 
-	mapping(address => bool) public authorizedIssuers;
-	mapping(address => IssuerProfile) public issuerProfiles;
+	/// @dev Primary issuer storage. Unknown addresses read as `{status: None}`.
+	mapping(address => Issuer) private _issuers;
 
-	/// @notice Certificates keyed by a unique `certificateId`.
+	/// @dev Append-only enumeration of every issuer that has ever applied or
+	///      been seeded at genesis. Frontends read this list and filter by
+	///      `status` to render the waitlist / active set. No removals means no
+	///      swap-and-pop complexity and no storage gaps.
+	address[] private _issuerList;
+
+	/// @dev Approval tracking: candidate => approver => approved?
+	///      Used to prevent double approvals and to expose `hasApproved()`
+	///      to the frontend without relying on event indexing.
+	mapping(address => mapping(address => bool)) private _hasApproved;
+
+	/// @notice Certificates keyed by `certificateId`.
 	mapping(bytes32 => Certificate) public certificates;
 
 	// ── Events ──────────────────────────────────────────────────────────
 
-	event IssuerRegistered(address indexed issuer);
-	event IssuerStatusChanged(address indexed issuer, bool active);
+	event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+	event IssuerApplied(address indexed issuer, string name, bytes32 metadataHash);
+	event IssuerApproved(address indexed approver, address indexed issuer, uint32 approvalCount);
+	event IssuerActivated(address indexed issuer);
+	event IssuerSuspended(address indexed issuer);
+	event IssuerUnsuspended(address indexed issuer);
+
 	event CertificateIssued(bytes32 indexed certificateId, address indexed issuer);
 	event CertificateRevoked(bytes32 indexed certificateId, address indexed issuer);
 
-	// ── Constructor & Modifiers ─────────────────────────────────────────
-
-	constructor() {
-		owner = msg.sender;
-	}
+	// ── Modifiers ───────────────────────────────────────────────────────
 
 	modifier onlyOwner() {
 		if (msg.sender != owner) revert NotOwner();
 		_;
 	}
 
-	modifier onlyAuthorizedIssuer() {
-		if (!authorizedIssuers[msg.sender]) revert UnauthorizedIssuer();
+	modifier onlyActiveIssuer() {
+		if (_issuers[msg.sender].status != IssuerStatus.Active) revert NotActiveIssuer();
 		_;
 	}
 
-	// ── Issuer Management ───────────────────────────────────────────────
+	// ── Constructor ─────────────────────────────────────────────────────
 
-	/// @notice Register a new authorized issuer (admin only).
-	/// @param issuer  Address of the institution to authorize.
-	/// @param metadataHash  Off-chain metadata hash (e.g. institution name, DID).
-	function registerIssuer(address issuer, bytes32 metadataHash) external onlyOwner {
-		if (issuer == address(0)) revert InvalidIssuerAddress();
-		if (issuerProfiles[issuer].account != address(0)) revert IssuerAlreadyRegistered();
+	/// @notice Bootstrap the registry with a set of genesis universities that
+	///         are Active from block zero.
+	/// @param  genesis   Non-empty list of genesis universities.
+	/// @param  threshold Number of Active-issuer approvals required to promote
+	///                   a future Pending applicant to Active. Must satisfy
+	///                   `1 <= threshold <= genesis.length` so that at least
+	///                   one onboarding path exists from day one.
+	constructor(GenesisIssuer[] memory genesis, uint32 threshold) {
+		if (threshold == 0) revert InvalidThreshold();
+		if (genesis.length == 0 || threshold > genesis.length) revert InvalidGenesis();
 
-		authorizedIssuers[issuer] = true;
-		issuerProfiles[issuer] = IssuerProfile({
-			account: issuer,
-			status: IssuerStatus.Active,
-			metadataHash: metadataHash
-		});
+		owner = msg.sender;
+		emit OwnershipTransferred(address(0), msg.sender);
 
-		emit IssuerRegistered(issuer);
+		approvalThreshold = threshold;
+
+		for (uint256 i = 0; i < genesis.length; i++) {
+			GenesisIssuer memory g = genesis[i];
+			if (g.account == address(0)) revert ZeroAddress();
+			_validateName(g.name);
+			if (_issuers[g.account].status != IssuerStatus.None) revert IssuerAlreadyExists();
+
+			_issuers[g.account] = Issuer({
+				account: g.account,
+				status: IssuerStatus.Active,
+				metadataHash: g.metadataHash,
+				name: g.name,
+				registeredAt: uint64(block.timestamp),
+				approvalCount: 0
+			});
+			_issuerList.push(g.account);
+			emit IssuerActivated(g.account);
+		}
 	}
 
-	/// @notice Enable or disable an issuer (admin only).
-	/// @param issuer  Address of the issuer to update.
-	/// @param active  True to activate, false to suspend.
-	function setIssuerStatus(address issuer, bool active) external onlyOwner {
-		if (issuerProfiles[issuer].account == address(0)) revert IssuerNotFound();
+	// ── Governance: Application & Approval ──────────────────────────────
 
-		authorizedIssuers[issuer] = active;
-		issuerProfiles[issuer].status = active ? IssuerStatus.Active : IssuerStatus.Suspended;
+	/// @notice Self-apply to join the registry as a university. The caller's
+	///         address becomes the issuer identity. Starts in `Pending`.
+	/// @param  name          Human-readable institution name (1..MAX_NAME_LENGTH bytes).
+	/// @param  metadataHash  Off-chain metadata commitment (DID doc, IPFS CID,
+	///                       etc.). Not resolved on-chain.
+	function applyAsIssuer(string calldata name, bytes32 metadataHash) external {
+		_validateName(name);
+		if (_issuers[msg.sender].status != IssuerStatus.None) revert IssuerAlreadyExists();
 
-		emit IssuerStatusChanged(issuer, active);
+		_issuers[msg.sender] = Issuer({
+			account: msg.sender,
+			status: IssuerStatus.Pending,
+			metadataHash: metadataHash,
+			name: name,
+			registeredAt: uint64(block.timestamp),
+			approvalCount: 0
+		});
+		_issuerList.push(msg.sender);
+
+		emit IssuerApplied(msg.sender, name, metadataHash);
+	}
+
+	/// @notice Approve a Pending university. Only Active universities can
+	///         approve, and only once per candidate. Reaching the threshold
+	///         promotes the candidate to Active atomically in the same tx.
+	/// @param  candidate Address of the Pending applicant.
+	function approveIssuer(address candidate) external onlyActiveIssuer {
+		if (candidate == msg.sender) revert CannotApproveSelf();
+
+		Issuer storage c = _issuers[candidate];
+		if (c.status != IssuerStatus.Pending) revert IssuerNotPending();
+		if (_hasApproved[candidate][msg.sender]) revert AlreadyApproved();
+
+		_hasApproved[candidate][msg.sender] = true;
+		uint32 newCount = c.approvalCount + 1;
+		c.approvalCount = newCount;
+
+		emit IssuerApproved(msg.sender, candidate, newCount);
+
+		if (newCount >= approvalThreshold) {
+			c.status = IssuerStatus.Active;
+			emit IssuerActivated(candidate);
+		}
+	}
+
+	// ── Governance: Emergency (owner) ───────────────────────────────────
+
+	/// @notice Suspend an Active issuer. Previously issued certificates remain
+	///         readable and verifiable, but the issuer can no longer issue
+	///         or revoke. Only the contract owner can call this.
+	function suspendIssuer(address issuer) external onlyOwner {
+		Issuer storage prof = _issuers[issuer];
+		if (prof.status == IssuerStatus.None) revert IssuerNotFound();
+		if (prof.status != IssuerStatus.Active) revert IssuerNotActive();
+		prof.status = IssuerStatus.Suspended;
+		emit IssuerSuspended(issuer);
+	}
+
+	/// @notice Lift a prior suspension. Only callable by the contract owner.
+	function unsuspendIssuer(address issuer) external onlyOwner {
+		Issuer storage prof = _issuers[issuer];
+		if (prof.status == IssuerStatus.None) revert IssuerNotFound();
+		if (prof.status != IssuerStatus.Suspended) revert IssuerNotSuspended();
+		prof.status = IssuerStatus.Active;
+		emit IssuerUnsuspended(issuer);
+	}
+
+	/// @notice Transfer ownership of the emergency-admin role.
+	/// @dev    One-step transfer; the deploying account is responsible for
+	///         choosing a safe target (EOA, multisig, etc.).
+	function transferOwnership(address newOwner) external onlyOwner {
+		if (newOwner == address(0)) revert ZeroAddress();
+		address prev = owner;
+		owner = newOwner;
+		emit OwnershipTransferred(prev, newOwner);
 	}
 
 	// ── Certificate Lifecycle ───────────────────────────────────────────
 
-	/// @notice Issue a new verifiable credential record.
-	/// @param certificateId         Unique identifier (generated off-chain by the issuer).
-	/// @param claimsHash            Deterministic hash of the canonical credential claims.
-	/// @param recipientCommitment   Privacy-preserving commitment binding the credential to its holder.
-	/// @return The `certificateId` used as the on-chain key.
+	/// @notice Issue a new verifiable credential record. Only Active issuers.
 	function issueCertificate(
 		bytes32 certificateId,
 		bytes32 claimsHash,
 		bytes32 recipientCommitment
-	) external onlyAuthorizedIssuer returns (bytes32) {
+	) external onlyActiveIssuer returns (bytes32) {
 		if (certificateId == bytes32(0)) revert InvalidCertificateId();
 		if (claimsHash == bytes32(0)) revert InvalidClaimsHash();
 		if (recipientCommitment == bytes32(0)) revert InvalidRecipientCommitment();
@@ -141,9 +283,9 @@ contract Univerify {
 		return certificateId;
 	}
 
-	/// @notice Revoke an issued certificate. Only the original issuer may revoke.
-	/// @param certificateId  The identifier of the certificate to revoke.
-	function revokeCertificate(bytes32 certificateId) external onlyAuthorizedIssuer {
+	/// @notice Revoke a certificate. Only the original issuer, and only while
+	///         still Active, may revoke.
+	function revokeCertificate(bytes32 certificateId) external onlyActiveIssuer {
 		if (certificateId == bytes32(0)) revert InvalidCertificateId();
 
 		Certificate storage cert = certificates[certificateId];
@@ -152,24 +294,13 @@ contract Univerify {
 		if (cert.revoked) revert CertificateAlreadyRevoked();
 
 		cert.revoked = true;
-
 		emit CertificateRevoked(certificateId, msg.sender);
 	}
 
 	// ── Verification ────────────────────────────────────────────────────
 
-	/// @notice Verify a certificate against presented credential data.
-	/// @dev    A verifier recomputes `claimsHash` from the off-chain credential
-	///         and calls this function with the `certificateId` included in the
-	///         presentation. The function returns all fields needed for a
-	///         complete verification decision.
-	/// @param certificateId  The certificate to verify.
-	/// @param claimsHash     The hash recomputed from the presented claims.
-	/// @return exists     True if a record exists for this certificateId.
-	/// @return issuer     The address that issued the certificate.
-	/// @return hashMatch  True if the presented claimsHash matches the stored record.
-	/// @return revoked    True if the certificate has been revoked.
-	/// @return issuedAt   Block timestamp when the certificate was registered.
+	/// @notice Presentation-based verification entrypoint. Returns all fields
+	///         a verifier needs to make a trust decision off-chain.
 	function verifyCertificate(
 		bytes32 certificateId,
 		bytes32 claimsHash
@@ -186,5 +317,43 @@ contract Univerify {
 		hashMatch = cert.claimsHash == claimsHash;
 		revoked = cert.revoked;
 		issuedAt = cert.issuedAt;
+	}
+
+	// ── Read Helpers ────────────────────────────────────────────────────
+
+	/// @notice Full issuer profile. Returns a zeroed struct (`status = None`)
+	///         for addresses that have never applied or been seeded.
+	function getIssuer(address account) external view returns (Issuer memory) {
+		return _issuers[account];
+	}
+
+	/// @notice Convenience gate for the frontend and for off-chain verifiers.
+	function isActiveIssuer(address account) external view returns (bool) {
+		return _issuers[account].status == IssuerStatus.Active;
+	}
+
+	/// @notice Whether a given Active issuer has already approved a candidate.
+	///         Enables the UI to disable an already-used approval button
+	///         without replaying events.
+	function hasApproved(address candidate, address approver) external view returns (bool) {
+		return _hasApproved[candidate][approver];
+	}
+
+	/// @notice Total number of known issuers (any status).
+	function issuerCount() external view returns (uint256) {
+		return _issuerList.length;
+	}
+
+	/// @notice Nth known issuer address, for paginated reads.
+	function issuerAt(uint256 index) external view returns (address) {
+		return _issuerList[index];
+	}
+
+	// ── Internal ────────────────────────────────────────────────────────
+
+	function _validateName(string memory name) internal pure {
+		bytes memory b = bytes(name);
+		if (b.length == 0) revert EmptyName();
+		if (b.length > MAX_NAME_LENGTH) revert NameTooLong();
 	}
 }
