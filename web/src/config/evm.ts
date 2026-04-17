@@ -44,8 +44,15 @@ export const proofOfExistenceAbi = [
 	},
 ] as const;
 
-// Well-known Substrate dev account Ethereum private keys.
-// These are PUBLIC test keys from Substrate dev mnemonics — NEVER use for real funds.
+// Well-known Moonbeam-compatible dev account Ethereum private keys, named
+// after their Substrate equivalents for consistency with the rest of the
+// project. These are PUBLIC test keys — NEVER use for real funds.
+//
+// Funding on the local pallet-revive node is wired in
+// `blockchain/runtime/src/genesis_config_presets.rs` (`eth_dev_accounts()`).
+// Adding a new dev account here also requires adding the matching 0xEE-padded
+// 32-byte AccountId there; otherwise the new account has zero balance and
+// cannot pay gas.
 export const evmDevAccounts = [
 	{
 		name: "Alice",
@@ -63,6 +70,22 @@ export const evmDevAccounts = [
 		name: "Charlie",
 		account: privateKeyToAccount(
 			"0x0b6e18cafb6ed99687ec547bd28139cafbd3a4f28014f8640076aba0082bf262",
+		),
+	},
+	{
+		// Dorothy in Moonbeam dev-account naming. Used in the Governance UI
+		// to demonstrate the `applyAsIssuer` → `approveIssuer` flow without
+		// having to touch the genesis-active issuer set.
+		name: "Dave",
+		account: privateKeyToAccount(
+			"0x39539ab1876910bbf3a223d84a29e28f1cb4e2e456503e7e91ed39b2e7223d68",
+		),
+	},
+	{
+		// Ethan in Moonbeam dev-account naming. Same purpose as Dave.
+		name: "Eve",
+		account: privateKeyToAccount(
+			"0x7dce9bc8babb68fec1409be38c8e1a52650206a7ed90ff956ae8a6d15eeaaef4",
 		),
 	},
 ];

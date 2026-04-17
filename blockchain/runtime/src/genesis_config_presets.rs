@@ -67,17 +67,24 @@ fn local_testnet_genesis() -> Value {
 	)
 }
 
-/// Ethereum dev accounts (Alith, Baltathar, Charleth) with 0xEE padding to 32 bytes.
-/// These are the standard dev accounts recognized by the eth-rpc adapter.
+/// Ethereum dev accounts (Moonbeam idx 0..4) with 0xEE padding to 32 bytes.
+/// Frontend `web/src/config/evm.ts` exposes these as Alice / Bob / Charlie /
+/// Dave / Eve. The first three are the genesis-active Univerify issuers; the
+/// last two exist so the Governance UI can demonstrate the apply / approve
+/// flow without touching the genesis set.
 fn eth_dev_accounts() -> Vec<AccountId> {
 	use sp_core::crypto::AccountId32;
 	[
-		// Alith
+		// Alith → Alice
 		hex_literal::hex!("f24ff3a9cf04c71dbc94d0b566f7a27b94566caceeeeeeeeeeeeeeeeeeeeeeee"),
-		// Baltathar
+		// Baltathar → Bob
 		hex_literal::hex!("3cd0a705a2dc65e5b1e1205896baa2be8a07c6e0eeeeeeeeeeeeeeeeeeeeeeee"),
-		// Charleth
+		// Charleth → Charlie
 		hex_literal::hex!("798d4ba9baf0064ec19eb4f0a1a45785ae9d6dfceeeeeeeeeeeeeeeeeeeeeeee"),
+		// Dorothy → Dave
+		hex_literal::hex!("773539d4ac0e786233d90a233654ccee26a613d9eeeeeeeeeeeeeeeeeeeeeeee"),
+		// Ethan → Eve
+		hex_literal::hex!("ff64d3f6efe2317ee2807d223a0bdc4c0c49dfdbeeeeeeeeeeeeeeeeeeeeeeee"),
 	]
 	.into_iter()
 	.map(AccountId32::from)
