@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { type Address, type Hex } from "viem";
 import { univerifyAbi } from "../config/univerify";
 import { evmDevAccounts, getPublicClient, getWalletClient } from "../config/evm";
@@ -6,6 +6,7 @@ import { deployments } from "../config/deployments";
 import { useChainStore } from "../store/chainStore";
 import {
 	buildCredential,
+	deriveCertificateId,
 	type CredentialClaims,
 	type VerifiableCredential,
 } from "../utils/credential";
@@ -18,6 +19,15 @@ type TxState =
 	| { kind: "waiting"; hash: Hex }
 	| { kind: "success"; hash: Hex; credential: VerifiableCredential }
 	| { kind: "error"; message: string };
+
+type RevokeTxState =
+	| { kind: "idle" }
+	| { kind: "sending" }
+	| { kind: "waiting"; hash: Hex }
+	| { kind: "success"; hash: Hex; certificateId: Hex; internalRef: string }
+	| { kind: "error"; message: string };
+
+type AuthStatus = "unknown" | "authorized" | "not-authorized";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -56,6 +66,9 @@ function extractRevertName(err: unknown): string | null {
 		"InvalidClaimsHash",
 		"InvalidRecipientCommitment",
 		"CertificateAlreadyExists",
+		"CertificateNotFound",
+		"NotCertificateIssuer",
+		"CertificateAlreadyRevoked",
 	];
 	for (const name of known) {
 		if (joined.includes(name)) return name;
@@ -90,6 +103,13 @@ export default function UniverifyIssuerPage() {
 
 	const [tx, setTx] = useState<TxState>({ kind: "idle" });
 
+	// Revoke state
+	const [revokeInternalRef, setRevokeInternalRef] = useState("");
+	const [revokeTx, setRevokeTx] = useState<RevokeTxState>({ kind: "idle" });
+
+	// Issuer authorization status on the current contract
+	const [authStatus, setAuthStatus] = useState<AuthStatus>("unknown");
+
 	function saveAddress(address: string) {
 		setContractAddress(address);
 		if (address) localStorage.setItem(scopedStorageKey, address);
@@ -98,6 +118,52 @@ export default function UniverifyIssuerPage() {
 
 	// ── Live preview (pure computation on every render) ──────────────
 	const issuerAddress = evmDevAccounts[selectedAccount].account.address as Hex;
+
+	// Re-derive the certificateId that would be revoked, purely from inputs.
+	// This is the whole point of Option 1: the institution only has to remember
+	// the internal reference, and the UI derives the on-chain id.
+	const derivedRevokeCertificateId = useMemo<Hex | null>(() => {
+		const ref = revokeInternalRef.trim();
+		if (!ref) return null;
+		return deriveCertificateId(issuerAddress, ref);
+	}, [issuerAddress, revokeInternalRef]);
+
+	// ── Issuer authorization check ───────────────────────────────────
+	// Calls `authorizedIssuers(address)` on every (contract, issuer, rpc)
+	// change. All state updates happen inside the async callback, so the
+	// effect body stays free of direct setState calls.
+	useEffect(() => {
+		if (!contractAddress) {
+			return;
+		}
+		let cancelled = false;
+		(async () => {
+			try {
+				const client = getPublicClient(ethRpcUrl);
+				const addr = contractAddress as Address;
+				const code = await client.getCode({ address: addr });
+				if (cancelled) return;
+				if (!code || code === "0x") {
+					setAuthStatus("unknown");
+					return;
+				}
+				const result = (await client.readContract({
+					address: addr,
+					abi: univerifyAbi,
+					functionName: "authorizedIssuers",
+					args: [issuerAddress],
+				})) as boolean;
+				if (cancelled) return;
+				setAuthStatus(result ? "authorized" : "not-authorized");
+			} catch {
+				if (cancelled) return;
+				setAuthStatus("unknown");
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [contractAddress, issuerAddress, ethRpcUrl]);
 
 	const preview = useMemo(() => {
 		// Only compute when all required fields are present to avoid showing
@@ -176,6 +242,70 @@ export default function UniverifyIssuerPage() {
 							? `Contract reverted: ${revert}.`
 							: `Transaction failed: ${e instanceof Error ? e.message : String(e)}`;
 			setTx({ kind: "error", message });
+		}
+	}
+
+	async function handleRevoke() {
+		if (!contractAddress) {
+			setRevokeTx({ kind: "error", message: "Enter a contract address first." });
+			return;
+		}
+		const ref = revokeInternalRef.trim();
+		if (!ref) {
+			setRevokeTx({
+				kind: "error",
+				message: "Enter the internal reference of the certificate to revoke.",
+			});
+			return;
+		}
+		const certificateId = deriveCertificateId(issuerAddress, ref);
+
+		setRevokeTx({ kind: "sending" });
+
+		try {
+			const publicClient = getPublicClient(ethRpcUrl);
+			const addr = contractAddress as Address;
+
+			const code = await publicClient.getCode({ address: addr });
+			if (!code || code === "0x") {
+				setRevokeTx({
+					kind: "error",
+					message: `No Univerify contract found at this address on ${ethRpcUrl}.`,
+				});
+				return;
+			}
+
+			const walletClient = await getWalletClient(selectedAccount, ethRpcUrl);
+			const hash = await walletClient.writeContract({
+				address: addr,
+				abi: univerifyAbi,
+				functionName: "revokeCertificate",
+				args: [certificateId],
+			});
+
+			setRevokeTx({ kind: "waiting", hash });
+
+			await publicClient.waitForTransactionReceipt({ hash });
+
+			setRevokeTx({ kind: "success", hash, certificateId, internalRef: ref });
+		} catch (e) {
+			console.error("Revoke failed:", e);
+			const revert = extractRevertName(e);
+			const message =
+				revert === "UnauthorizedIssuer"
+					? `This account (${issuerAddress}) is not an authorized issuer on this Univerify contract.`
+					: revert === "CertificateNotFound"
+						? `No certificate exists for internal reference "${ref}" issued by ${issuerAddress}. Double-check the spelling and that you are using the same issuer that emitted it.`
+						: revert === "NotCertificateIssuer"
+							? "This certificate was issued by a different account. Switch the dev account to the original issuer."
+							: revert === "CertificateAlreadyRevoked"
+								? "This certificate has already been revoked."
+								: revert === "InvalidCertificateId"
+									? "Invalid certificate id (zero)."
+									: revert
+										? `Contract reverted: ${revert}.`
+										: `Transaction failed: ${e instanceof Error ? e.message : String(e)}`;
+			setRevokeTx({ kind: "error", message });
 		}
 	}
 
@@ -258,10 +388,14 @@ export default function UniverifyIssuerPage() {
 							</option>
 						))}
 					</select>
+					<div className="mt-2 flex items-center gap-2 flex-wrap">
+						<AuthorizationBadge status={authStatus} />
+					</div>
 					<p className="text-xs text-text-muted mt-2">
-						The selected account signs the <code>issueCertificate</code> transaction.
-						It must already be an authorized issuer (the deploy script registers the
-						deployer — usually Alice — by default).
+						The selected account signs the <code>issueCertificate</code> and{" "}
+						<code>revokeCertificate</code> transactions. It must already be an
+						authorized issuer (the deploy script registers the deployer — usually
+						Alice — by default).
 					</p>
 				</div>
 			</div>
@@ -454,7 +588,116 @@ export default function UniverifyIssuerPage() {
 					</div>
 				</div>
 			)}
+
+			{/* Revoke card */}
+			<div className="card space-y-4">
+				<h2 className="section-title text-accent-orange">Revoke Certificate</h2>
+				<p className="text-text-secondary text-sm">
+					Enter the <code>Internal Reference</code> you used when issuing (e.g.{" "}
+					<code>DIPLOMA-0001</code>). The <code>certificateId</code> is re-derived from
+					the selected issuer address, so you do not need to remember the 32-byte
+					id. Only the account that originally issued the certificate can revoke it.
+				</p>
+
+				<div>
+					<label className="label">Internal Reference</label>
+					<input
+						type="text"
+						value={revokeInternalRef}
+						onChange={(e) => {
+							setRevokeInternalRef(e.target.value);
+							if (revokeTx.kind === "success" || revokeTx.kind === "error") {
+								setRevokeTx({ kind: "idle" });
+							}
+						}}
+						placeholder="DIPLOMA-0001"
+						className="input-field w-full"
+					/>
+					{derivedRevokeCertificateId && (
+						<p className="text-xs text-text-muted mt-2 break-all">
+							Derived Certificate ID:{" "}
+							<code className="text-text-secondary font-mono">
+								{derivedRevokeCertificateId}
+							</code>
+						</p>
+					)}
+				</div>
+
+				<div className="flex flex-wrap items-center gap-3">
+					<button
+						onClick={handleRevoke}
+						disabled={
+							!contractAddress ||
+							!revokeInternalRef.trim() ||
+							revokeTx.kind === "sending" ||
+							revokeTx.kind === "waiting"
+						}
+						className="btn-accent"
+						style={{
+							background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
+							boxShadow:
+								"0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)",
+						}}
+					>
+						{revokeTx.kind === "sending"
+							? "Signing..."
+							: revokeTx.kind === "waiting"
+								? "Waiting for receipt..."
+								: "Revoke"}
+					</button>
+					{revokeTx.kind === "error" && (
+						<p className="text-sm font-medium text-accent-red">
+							{revokeTx.message}
+						</p>
+					)}
+					{revokeTx.kind === "waiting" && (
+						<p className="text-sm text-text-tertiary font-mono break-all">
+							tx: {revokeTx.hash}
+						</p>
+					)}
+				</div>
+
+				{revokeTx.kind === "success" && (
+					<div className="rounded-lg border border-accent-orange/30 bg-accent-orange/10 p-4 space-y-2 animate-fade-in">
+						<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
+							✓ Revoked
+						</span>
+						<p className="text-sm text-text-primary">
+							Certificate <code>{revokeTx.internalRef}</code> has been revoked
+							on-chain. Verifications will now show it as revoked.
+						</p>
+						<p className="text-xs text-text-tertiary font-mono break-all">
+							certificateId: {revokeTx.certificateId}
+						</p>
+						<p className="text-xs text-text-tertiary font-mono break-all">
+							tx: {revokeTx.hash}
+						</p>
+					</div>
+				)}
+			</div>
 		</div>
+	);
+}
+
+function AuthorizationBadge({ status }: { status: AuthStatus }) {
+	if (status === "authorized") {
+		return (
+			<span className="status-badge border bg-accent-green/10 text-accent-green border-accent-green/30">
+				✓ Authorized issuer
+			</span>
+		);
+	}
+	if (status === "not-authorized") {
+		return (
+			<span className="status-badge border bg-accent-red/10 text-accent-red border-accent-red/30">
+				✗ Not authorized — issuance and revocation will revert
+			</span>
+		);
+	}
+	return (
+		<span className="status-badge border bg-white/[0.04] text-text-muted border-white/[0.08]">
+			· Issuer status unknown
+		</span>
 	);
 }
 
