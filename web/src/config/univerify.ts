@@ -1,13 +1,13 @@
-// Univerify contract ABI — verifiable academic credential registry.
-// This ABI matches contracts/evm/contracts/Univerify.sol after the
-// credential-model refactor.
+// Univerify contract ABI — federated academic credential registry.
+// Mirrors `contracts/evm/contracts/Univerify.sol` after the federated-issuer
+// refactor. Hand-maintained until a shared compiled-artifact pipeline exists.
 export const univerifyAbi = [
-	// ── Issuer Management ───────────────────────────────────────────
+	// ── Governance: application & approval ─────────────────────────
 	{
 		type: "function",
-		name: "registerIssuer",
+		name: "applyAsIssuer",
 		inputs: [
-			{ name: "issuer", type: "address" },
+			{ name: "name", type: "string" },
 			{ name: "metadataHash", type: "bytes32" },
 		],
 		outputs: [],
@@ -15,23 +15,36 @@ export const univerifyAbi = [
 	},
 	{
 		type: "function",
-		name: "setIssuerStatus",
-		inputs: [
-			{ name: "issuer", type: "address" },
-			{ name: "active", type: "bool" },
-		],
+		name: "approveIssuer",
+		inputs: [{ name: "candidate", type: "address" }],
+		outputs: [],
+		stateMutability: "nonpayable",
+	},
+
+	// ── Governance: emergency admin (owner-only) ───────────────────
+	{
+		type: "function",
+		name: "suspendIssuer",
+		inputs: [{ name: "issuer", type: "address" }],
 		outputs: [],
 		stateMutability: "nonpayable",
 	},
 	{
 		type: "function",
-		name: "authorizedIssuers",
-		inputs: [{ name: "", type: "address" }],
-		outputs: [{ name: "", type: "bool" }],
-		stateMutability: "view",
+		name: "unsuspendIssuer",
+		inputs: [{ name: "issuer", type: "address" }],
+		outputs: [],
+		stateMutability: "nonpayable",
+	},
+	{
+		type: "function",
+		name: "transferOwnership",
+		inputs: [{ name: "newOwner", type: "address" }],
+		outputs: [],
+		stateMutability: "nonpayable",
 	},
 
-	// ── Certificate Lifecycle ───────────────────────────────────────
+	// ── Certificate lifecycle ───────────────────────────────────────
 	{
 		type: "function",
 		name: "issueCertificate",
@@ -82,7 +95,60 @@ export const univerifyAbi = [
 		stateMutability: "view",
 	},
 
-	// ── Read-only State ─────────────────────────────────────────────
+	// ── Issuer reads ────────────────────────────────────────────────
+	{
+		type: "function",
+		name: "getIssuer",
+		inputs: [{ name: "account", type: "address" }],
+		outputs: [
+			{
+				name: "",
+				type: "tuple",
+				components: [
+					{ name: "account", type: "address" },
+					{ name: "status", type: "uint8" },
+					{ name: "metadataHash", type: "bytes32" },
+					{ name: "name", type: "string" },
+					{ name: "registeredAt", type: "uint64" },
+					{ name: "approvalCount", type: "uint32" },
+				],
+			},
+		],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
+		name: "isActiveIssuer",
+		inputs: [{ name: "account", type: "address" }],
+		outputs: [{ name: "", type: "bool" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
+		name: "hasApproved",
+		inputs: [
+			{ name: "candidate", type: "address" },
+			{ name: "approver", type: "address" },
+		],
+		outputs: [{ name: "", type: "bool" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
+		name: "issuerCount",
+		inputs: [],
+		outputs: [{ name: "", type: "uint256" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
+		name: "issuerAt",
+		inputs: [{ name: "index", type: "uint256" }],
+		outputs: [{ name: "", type: "address" }],
+		stateMutability: "view",
+	},
+
+	// ── Top-level state ─────────────────────────────────────────────
 	{
 		type: "function",
 		name: "owner",
@@ -90,20 +156,62 @@ export const univerifyAbi = [
 		outputs: [{ name: "", type: "address" }],
 		stateMutability: "view",
 	},
+	{
+		type: "function",
+		name: "approvalThreshold",
+		inputs: [],
+		outputs: [{ name: "", type: "uint32" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
+		name: "MAX_NAME_LENGTH",
+		inputs: [],
+		outputs: [{ name: "", type: "uint256" }],
+		stateMutability: "view",
+	},
 
 	// ── Events ──────────────────────────────────────────────────────
 	{
 		type: "event",
-		name: "IssuerRegistered",
+		name: "OwnershipTransferred",
+		inputs: [
+			{ name: "previousOwner", type: "address", indexed: true },
+			{ name: "newOwner", type: "address", indexed: true },
+		],
+	},
+	{
+		type: "event",
+		name: "IssuerApplied",
+		inputs: [
+			{ name: "issuer", type: "address", indexed: true },
+			{ name: "name", type: "string", indexed: false },
+			{ name: "metadataHash", type: "bytes32", indexed: false },
+		],
+	},
+	{
+		type: "event",
+		name: "IssuerApproved",
+		inputs: [
+			{ name: "approver", type: "address", indexed: true },
+			{ name: "issuer", type: "address", indexed: true },
+			{ name: "approvalCount", type: "uint32", indexed: false },
+		],
+	},
+	{
+		type: "event",
+		name: "IssuerActivated",
 		inputs: [{ name: "issuer", type: "address", indexed: true }],
 	},
 	{
 		type: "event",
-		name: "IssuerStatusChanged",
-		inputs: [
-			{ name: "issuer", type: "address", indexed: true },
-			{ name: "active", type: "bool", indexed: false },
-		],
+		name: "IssuerSuspended",
+		inputs: [{ name: "issuer", type: "address", indexed: true }],
+	},
+	{
+		type: "event",
+		name: "IssuerUnsuspended",
+		inputs: [{ name: "issuer", type: "address", indexed: true }],
 	},
 	{
 		type: "event",
@@ -122,3 +230,30 @@ export const univerifyAbi = [
 		],
 	},
 ] as const;
+
+// ── IssuerStatus mirror ─────────────────────────────────────────────
+// Numeric values must match the Solidity `enum IssuerStatus` order:
+//   None = 0, Pending = 1, Active = 2, Suspended = 3
+export const IssuerStatus = {
+	None: 0,
+	Pending: 1,
+	Active: 2,
+	Suspended: 3,
+} as const;
+
+export type IssuerStatusValue = (typeof IssuerStatus)[keyof typeof IssuerStatus];
+
+export function issuerStatusLabel(status: IssuerStatusValue | number): string {
+	switch (status) {
+		case IssuerStatus.None:
+			return "Not registered";
+		case IssuerStatus.Pending:
+			return "Pending";
+		case IssuerStatus.Active:
+			return "Active";
+		case IssuerStatus.Suspended:
+			return "Suspended";
+		default:
+			return "Unknown";
+	}
+}
