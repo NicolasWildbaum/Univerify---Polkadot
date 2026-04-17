@@ -10,6 +10,7 @@ import {
 	type CredentialClaims,
 	type VerifiableCredential,
 } from "../utils/credential";
+import { extractRevertName } from "../utils/contractErrors";
 
 const STORAGE_KEY_PREFIX = "univerify:address";
 
@@ -27,7 +28,9 @@ type RevokeTxState =
 	| { kind: "success"; hash: Hex; certificateId: Hex; internalRef: string }
 	| { kind: "error"; message: string };
 
-type AuthStatus = "unknown" | "authorized" | "not-authorized";
+// `unknown` covers the loading state and unreachable contracts. Anything other
+// than `active` blocks issuance/revocation in the UI just like the contract.
+type AuthStatus = "unknown" | "active" | "pending" | "suspended" | "not-registered";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -38,42 +41,6 @@ function randomBytes32(): Hex {
 		.map((b) => b.toString(16).padStart(2, "0"))
 		.join("");
 	return `0x${hex}` as Hex;
-}
-
-function extractRevertName(err: unknown): string | null {
-	// viem surfaces custom errors in various places depending on version.
-	// We inspect .message / .shortMessage / walk .cause for the error name.
-	const parts: string[] = [];
-	let cur: unknown = err;
-	let depth = 0;
-	while (cur && depth < 10) {
-		if (cur instanceof Error) {
-			parts.push(cur.message);
-			const any = cur as { shortMessage?: string; details?: string };
-			if (any.shortMessage) parts.push(any.shortMessage);
-			if (any.details) parts.push(any.details);
-			cur = (cur as { cause?: unknown }).cause;
-		} else {
-			parts.push(String(cur));
-			break;
-		}
-		depth++;
-	}
-	const joined = parts.join("\n");
-	const known = [
-		"UnauthorizedIssuer",
-		"InvalidCertificateId",
-		"InvalidClaimsHash",
-		"InvalidRecipientCommitment",
-		"CertificateAlreadyExists",
-		"CertificateNotFound",
-		"NotCertificateIssuer",
-		"CertificateAlreadyRevoked",
-	];
-	for (const name of known) {
-		if (joined.includes(name)) return name;
-	}
-	return null;
 }
 
 // ── Component ───────────────────────────────────────────────────────
@@ -129,9 +96,9 @@ export default function UniverifyIssuerPage() {
 	}, [issuerAddress, revokeInternalRef]);
 
 	// ── Issuer authorization check ───────────────────────────────────
-	// Calls `authorizedIssuers(address)` on every (contract, issuer, rpc)
-	// change. All state updates happen inside the async callback, so the
-	// effect body stays free of direct setState calls.
+	// Reads `getIssuer(address).status` so the UI can disambiguate Pending /
+	// Suspended / Not-registered, not just "authorized vs not". The federated
+	// model rejects issuance from anything other than Active.
 	useEffect(() => {
 		if (!contractAddress) {
 			return;
@@ -147,14 +114,26 @@ export default function UniverifyIssuerPage() {
 					setAuthStatus("unknown");
 					return;
 				}
-				const result = (await client.readContract({
+				const issuer = (await client.readContract({
 					address: addr,
 					abi: univerifyAbi,
-					functionName: "authorizedIssuers",
+					functionName: "getIssuer",
 					args: [issuerAddress],
-				})) as boolean;
+				})) as { status: number };
 				if (cancelled) return;
-				setAuthStatus(result ? "authorized" : "not-authorized");
+				switch (Number(issuer.status)) {
+					case 2:
+						setAuthStatus("active");
+						break;
+					case 1:
+						setAuthStatus("pending");
+						break;
+					case 3:
+						setAuthStatus("suspended");
+						break;
+					default:
+						setAuthStatus("not-registered");
+				}
 			} catch {
 				if (cancelled) return;
 				setAuthStatus("unknown");
@@ -193,7 +172,10 @@ export default function UniverifyIssuerPage() {
 	}, [claims, internalRef, holderIdentifier, secret, issuerAddress]);
 
 	const canSubmit =
-		contractAddress.length > 0 && preview !== null && tx.kind !== "sending" && tx.kind !== "waiting";
+		contractAddress.length > 0 &&
+		preview !== null &&
+		tx.kind !== "sending" &&
+		tx.kind !== "waiting";
 
 	async function handleIssue() {
 		if (!preview) return;
@@ -234,8 +216,8 @@ export default function UniverifyIssuerPage() {
 			console.error("Issue failed:", e);
 			const revert = extractRevertName(e);
 			const message =
-				revert === "UnauthorizedIssuer"
-					? `This account (${issuerAddress}) is not an authorized issuer on this Univerify contract. Register it via the admin account or the CLI before issuing.`
+				revert === "NotActiveIssuer"
+					? `This account (${issuerAddress}) is not an Active issuer on this Univerify contract. Apply via the Governance page and wait for enough approvals before issuing.`
 					: revert === "CertificateAlreadyExists"
 						? "A certificate with this ID already exists. Change the Internal Reference to issue a new one."
 						: revert
@@ -292,8 +274,8 @@ export default function UniverifyIssuerPage() {
 			console.error("Revoke failed:", e);
 			const revert = extractRevertName(e);
 			const message =
-				revert === "UnauthorizedIssuer"
-					? `This account (${issuerAddress}) is not an authorized issuer on this Univerify contract.`
+				revert === "NotActiveIssuer"
+					? `This account (${issuerAddress}) is not an Active issuer on this Univerify contract.`
 					: revert === "CertificateNotFound"
 						? `No certificate exists for internal reference "${ref}" issued by ${issuerAddress}. Double-check the spelling and that you are using the same issuer that emitted it.`
 						: revert === "NotCertificateIssuer"
@@ -339,9 +321,9 @@ export default function UniverifyIssuerPage() {
 				<h1 className="page-title text-polka-500">Issue Credential</h1>
 				<p className="text-text-secondary">
 					Sign and register a new verifiable academic credential on the Univerify
-					contract. The resulting credential JSON is the artefact you give to the
-					holder — they present it to verifiers, who recompute the hash and check the
-					on-chain record.
+					contract. The resulting credential JSON is the artefact you give to the holder —
+					they present it to verifiers, who recompute the hash and check the on-chain
+					record.
 				</p>
 			</div>
 
@@ -393,9 +375,9 @@ export default function UniverifyIssuerPage() {
 					</div>
 					<p className="text-xs text-text-muted mt-2">
 						The selected account signs the <code>issueCertificate</code> and{" "}
-						<code>revokeCertificate</code> transactions. It must already be an
-						authorized issuer (the deploy script registers the deployer — usually
-						Alice — by default).
+						<code>revokeCertificate</code> transactions. It must be an{" "}
+						<strong>Active</strong> issuer on this contract — apply and get approved on
+						the Governance page first.
 					</p>
 				</div>
 			</div>
@@ -405,8 +387,8 @@ export default function UniverifyIssuerPage() {
 				<h2 className="section-title">Credential Claims</h2>
 				<p className="text-text-secondary text-sm">
 					These fields are hashed deterministically into <code>claimsHash</code>. Any
-					change — even a single character — produces a different hash and invalidates
-					the credential at verification time.
+					change — even a single character — produces a different hash and invalidates the
+					credential at verification time.
 				</p>
 				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 					<ClaimInput
@@ -440,8 +422,8 @@ export default function UniverifyIssuerPage() {
 			<div className="card space-y-4">
 				<h2 className="section-title">Issuance Metadata</h2>
 				<p className="text-text-secondary text-sm">
-					These values make the certificate unique and privacy-preserving but are not
-					part of the claims hash.
+					These values make the certificate unique and privacy-preserving but are not part
+					of the claims hash.
 				</p>
 
 				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -523,11 +505,7 @@ export default function UniverifyIssuerPage() {
 				)}
 
 				<div className="flex flex-wrap items-center gap-3 pt-2">
-					<button
-						onClick={handleIssue}
-						disabled={!canSubmit}
-						className="btn-primary"
-					>
+					<button onClick={handleIssue} disabled={!canSubmit} className="btn-primary">
 						{tx.kind === "sending"
 							? "Signing..."
 							: tx.kind === "waiting"
@@ -552,9 +530,7 @@ export default function UniverifyIssuerPage() {
 						<span className="status-badge border bg-accent-green/10 text-accent-green border-accent-green/30">
 							✓ Issued
 						</span>
-						<h2 className="section-title mt-2 text-accent-green">
-							Certificate issued
-						</h2>
+						<h2 className="section-title mt-2 text-accent-green">Certificate issued</h2>
 						<p className="text-sm text-text-secondary mt-1">
 							Give the JSON below to the holder. They (or any verifier) can paste it
 							into the Verify tab to check it against the on-chain record.
@@ -595,8 +571,8 @@ export default function UniverifyIssuerPage() {
 				<p className="text-text-secondary text-sm">
 					Enter the <code>Internal Reference</code> you used when issuing (e.g.{" "}
 					<code>DIPLOMA-0001</code>). The <code>certificateId</code> is re-derived from
-					the selected issuer address, so you do not need to remember the 32-byte
-					id. Only the account that originally issued the certificate can revoke it.
+					the selected issuer address, so you do not need to remember the 32-byte id. Only
+					the account that originally issued the certificate can revoke it.
 				</p>
 
 				<div>
@@ -646,9 +622,7 @@ export default function UniverifyIssuerPage() {
 								: "Revoke"}
 					</button>
 					{revokeTx.kind === "error" && (
-						<p className="text-sm font-medium text-accent-red">
-							{revokeTx.message}
-						</p>
+						<p className="text-sm font-medium text-accent-red">{revokeTx.message}</p>
 					)}
 					{revokeTx.kind === "waiting" && (
 						<p className="text-sm text-text-tertiary font-mono break-all">
@@ -680,25 +654,39 @@ export default function UniverifyIssuerPage() {
 }
 
 function AuthorizationBadge({ status }: { status: AuthStatus }) {
-	if (status === "authorized") {
-		return (
-			<span className="status-badge border bg-accent-green/10 text-accent-green border-accent-green/30">
-				✓ Authorized issuer
-			</span>
-		);
+	switch (status) {
+		case "active":
+			return (
+				<span className="status-badge border bg-accent-green/10 text-accent-green border-accent-green/30">
+					✓ Active issuer
+				</span>
+			);
+		case "pending":
+			return (
+				<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
+					⏳ Pending — needs more approvals before issuing
+				</span>
+			);
+		case "suspended":
+			return (
+				<span className="status-badge border bg-accent-red/10 text-accent-red border-accent-red/30">
+					✗ Suspended — issuance and revocation will revert
+				</span>
+			);
+		case "not-registered":
+			return (
+				<span className="status-badge border bg-accent-red/10 text-accent-red border-accent-red/30">
+					✗ Not registered — apply on the Governance page
+				</span>
+			);
+		case "unknown":
+		default:
+			return (
+				<span className="status-badge border bg-white/[0.04] text-text-muted border-white/[0.08]">
+					· Issuer status unknown
+				</span>
+			);
 	}
-	if (status === "not-authorized") {
-		return (
-			<span className="status-badge border bg-accent-red/10 text-accent-red border-accent-red/30">
-				✗ Not authorized — issuance and revocation will revert
-			</span>
-		);
-	}
-	return (
-		<span className="status-badge border bg-white/[0.04] text-text-muted border-white/[0.08]">
-			· Issuer status unknown
-		</span>
-	);
 }
 
 // ── Small presentational components ─────────────────────────────────
