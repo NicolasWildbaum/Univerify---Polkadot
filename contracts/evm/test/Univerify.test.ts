@@ -130,6 +130,7 @@ type ApplyArgs = { issuer: Address; name: string; metadataHash: Hex };
 type ApproveArgs = { approver: Address; issuer: Address; approvalCount: number | bigint };
 type IssuerAddrArgs = { issuer: Address };
 type OwnershipArgs = { previousOwner: Address; newOwner: Address };
+type CertIssuedArgs = { certificateId: Hex; issuer: Address; student: Address };
 type CertArgs = { certificateId: Hex; issuer: Address };
 
 // ── Test data ────────────────────────────────────────────────────────
@@ -154,7 +155,8 @@ const DEFAULT_THRESHOLD = 2;
 // ── Fixtures ─────────────────────────────────────────────────────────
 
 async function deployWithGenesis() {
-	const [owner, alice, bob, charlie, applicant, stranger] = await hre.viem.getWalletClients();
+	const [owner, alice, bob, charlie, applicant, stranger, student] =
+		await hre.viem.getWalletClients();
 	const publicClient = await hre.viem.getPublicClient();
 
 	const genesis = [
@@ -164,15 +166,24 @@ async function deployWithGenesis() {
 	];
 
 	const univerify = await hre.viem.deployContract("Univerify", [genesis, DEFAULT_THRESHOLD]);
+	const certificateNft = await hre.viem.deployContract("CertificateNft", [
+		univerify.address,
+		univerify.address,
+	]);
+	await univerify.write.setCertificateNft([certificateNft.address], {
+		account: owner.account,
+	});
 
 	return {
 		univerify,
+		certificateNft,
 		owner,
 		alice,
 		bob,
 		charlie,
 		applicant,
 		stranger,
+		student,
 		publicClient,
 		genesis,
 		threshold: DEFAULT_THRESHOLD,
@@ -879,9 +890,10 @@ describe("Univerify", function () {
 
 	describe("issueCertificate", function () {
 		it("an Active issuer can issue a certificate and it is stored correctly", async function () {
-			const { univerify, alice, publicClient } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student, publicClient } =
+				await loadFixture(deployWithGenesis);
 			const txHash = await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
@@ -897,14 +909,15 @@ describe("Univerify", function () {
 			expect(cert.revoked).to.equal(false);
 		});
 
-		it("emits CertificateIssued", async function () {
-			const { univerify, alice, publicClient } = await loadFixture(deployWithGenesis);
+		it("emits CertificateIssued (with student)", async function () {
+			const { univerify, alice, student, publicClient } =
+				await loadFixture(deployWithGenesis);
 			const txHash = await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-			const logs = parseLogs<CertArgs>(
+			const logs = parseLogs<CertIssuedArgs>(
 				univerify.abi as Abi,
 				receipt.logs,
 				"CertificateIssued",
@@ -912,26 +925,28 @@ describe("Univerify", function () {
 			expect(logs).to.have.lengthOf(1);
 			expect(logs[0].args.certificateId).to.equal(certificateId);
 			expect(getAddress(logs[0].args.issuer)).to.equal(getAddress(alice.account.address));
+			expect(getAddress(logs[0].args.student)).to.equal(getAddress(student.account.address));
 		});
 
 		it("returns the certificateId", async function () {
-			const { univerify, alice, publicClient } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student, publicClient } =
+				await loadFixture(deployWithGenesis);
 			const { result } = await publicClient.simulateContract({
 				address: univerify.address,
 				abi: univerify.abi,
 				functionName: "issueCertificate",
-				args: [certificateId, claimsHash, recipientCommitment],
+				args: [certificateId, claimsHash, recipientCommitment, student.account.address],
 				account: alice.account,
 			});
 			expect(result).to.equal(certificateId);
 		});
 
 		it("reverts NotActiveIssuer when caller is unknown (None)", async function () {
-			const { univerify, stranger } = await loadFixture(deployWithGenesis);
+			const { univerify, stranger, student } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
-						[certificateId, claimsHash, recipientCommitment],
+						[certificateId, claimsHash, recipientCommitment, student.account.address],
 						{ account: stranger.account },
 					),
 				"NotActiveIssuer",
@@ -939,11 +954,12 @@ describe("Univerify", function () {
 		});
 
 		it("reverts NotActiveIssuer when caller is Pending", async function () {
-			const { univerify, applicant } = await loadFixture(deployWithPendingApplicant);
+			const { univerify, applicant, student } =
+				await loadFixture(deployWithPendingApplicant);
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
-						[certificateId, claimsHash, recipientCommitment],
+						[certificateId, claimsHash, recipientCommitment, student.account.address],
 						{ account: applicant.account },
 					),
 				"NotActiveIssuer",
@@ -951,14 +967,14 @@ describe("Univerify", function () {
 		});
 
 		it("reverts NotActiveIssuer when caller has been suspended", async function () {
-			const { univerify, owner, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, owner, alice, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.suspendIssuer([alice.account.address], {
 				account: owner.account,
 			});
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
-						[certificateId, claimsHash, recipientCommitment],
+						[certificateId, claimsHash, recipientCommitment, student.account.address],
 						{ account: alice.account },
 					),
 				"NotActiveIssuer",
@@ -966,11 +982,11 @@ describe("Univerify", function () {
 		});
 
 		it("reverts InvalidCertificateId on zero id", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
-						[ZERO_BYTES32, claimsHash, recipientCommitment],
+						[ZERO_BYTES32, claimsHash, recipientCommitment, student.account.address],
 						{ account: alice.account },
 					),
 				"InvalidCertificateId",
@@ -978,11 +994,11 @@ describe("Univerify", function () {
 		});
 
 		it("reverts InvalidClaimsHash on zero claims hash", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
-						[certificateId, ZERO_BYTES32, recipientCommitment],
+						[certificateId, ZERO_BYTES32, recipientCommitment, student.account.address],
 						{ account: alice.account },
 					),
 				"InvalidClaimsHash",
@@ -990,29 +1006,108 @@ describe("Univerify", function () {
 		});
 
 		it("reverts InvalidRecipientCommitment on zero recipient commitment", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
-					univerify.write.issueCertificate([certificateId, claimsHash, ZERO_BYTES32], {
-						account: alice.account,
-					}),
+					univerify.write.issueCertificate(
+						[certificateId, claimsHash, ZERO_BYTES32, student.account.address],
+						{ account: alice.account },
+					),
 				"InvalidRecipientCommitment",
 			);
 		});
 
 		it("reverts CertificateAlreadyExists on duplicate id", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
-						[certificateId, claimsHash2, recipientCommitment],
+						[certificateId, claimsHash2, recipientCommitment, student.account.address],
 						{ account: alice.account },
 					),
 				"CertificateAlreadyExists",
+			);
+		});
+
+		it("reverts InvalidStudentAddress on zero student", async function () {
+			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			await expectRevert(
+				() =>
+					univerify.write.issueCertificate(
+						[certificateId, claimsHash, recipientCommitment, ZERO_ADDRESS],
+						{ account: alice.account },
+					),
+				"InvalidStudentAddress",
+			);
+		});
+
+		it("mints exactly one soulbound NFT to the student wallet", async function () {
+			const { univerify, certificateNft, alice, student } =
+				await loadFixture(deployWithGenesis);
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				{ account: alice.account },
+			);
+			const tokenId = (await certificateNft.read.certIdToTokenId([
+				certificateId,
+			])) as bigint;
+			expect(tokenId).to.equal(1n);
+			expect(
+				getAddress((await certificateNft.read.ownerOf([tokenId])) as Address),
+			).to.equal(getAddress(student.account.address));
+			expect((await certificateNft.read.balanceOf([student.account.address])) as bigint).to.equal(
+				1n,
+			);
+			expect((await certificateNft.read.tokenIdToCertId([tokenId])) as Hex).to.equal(
+				certificateId,
+			);
+		});
+	});
+
+	// ── NFT wiring ───────────────────────────────────────────────────
+
+	describe("setCertificateNft", function () {
+		it("reverts NftNotConfigured when issuing before NFT is wired", async function () {
+			// Deploy a fresh Univerify without wiring a CertificateNft.
+			const [, alice, , , , , student] = await hre.viem.getWalletClients();
+			const genesis = [
+				{ account: alice.account.address, name: GENESIS_NAMES[0], metadataHash: metaUdelar },
+			];
+			const univerify = await hre.viem.deployContract("Univerify", [genesis, 1]);
+			await expectRevert(
+				() =>
+					univerify.write.issueCertificate(
+						[certificateId, claimsHash, recipientCommitment, student.account.address],
+						{ account: alice.account },
+					),
+				"NftNotConfigured",
+			);
+		});
+
+		it("reverts NftAlreadySet on second wire-up", async function () {
+			const { univerify, certificateNft, owner } = await loadFixture(deployWithGenesis);
+			await expectRevert(
+				() =>
+					univerify.write.setCertificateNft([certificateNft.address], {
+						account: owner.account,
+					}),
+				"NftAlreadySet",
+			);
+		});
+
+		it("reverts NotOwner when called by a non-owner", async function () {
+			const { univerify, certificateNft, alice } = await loadFixture(deployWithGenesis);
+			// Re-set is owner-only even though it would also fail with NftAlreadySet.
+			await expectRevert(
+				() =>
+					univerify.write.setCertificateNft([certificateNft.address], {
+						account: alice.account,
+					}),
+				"NotOwner",
 			);
 		});
 	});
@@ -1021,9 +1116,10 @@ describe("Univerify", function () {
 
 	describe("revokeCertificate", function () {
 		it("the original Active issuer can revoke and emits CertificateRevoked", async function () {
-			const { univerify, alice, publicClient } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student, publicClient } =
+				await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			const txHash = await univerify.write.revokeCertificate([certificateId], {
@@ -1069,9 +1165,9 @@ describe("Univerify", function () {
 		});
 
 		it("reverts NotCertificateIssuer when another Active issuer tries to revoke", async function () {
-			const { univerify, alice, bob } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, bob, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			await expectRevert(
@@ -1084,9 +1180,9 @@ describe("Univerify", function () {
 		});
 
 		it("reverts CertificateAlreadyRevoked on double revocation", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			await univerify.write.revokeCertificate([certificateId], {
@@ -1103,9 +1199,9 @@ describe("Univerify", function () {
 
 		it("reverts NotActiveIssuer when the original issuer has been suspended", async function () {
 			// Documents the intentional design: suspended issuers cannot revoke their own certs.
-			const { univerify, owner, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, owner, alice, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			await univerify.write.suspendIssuer([alice.account.address], {
@@ -1142,9 +1238,9 @@ describe("Univerify", function () {
 		});
 
 		it("returns hashMatch=true when claimsHash matches", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			const [exists, certIssuer, hashMatch, revoked, issuedAt] =
@@ -1163,9 +1259,9 @@ describe("Univerify", function () {
 		});
 
 		it("returns hashMatch=false when claimsHash does not match", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			const wrongHash = keccak256(toBytes("tampered-claims"));
@@ -1178,9 +1274,9 @@ describe("Univerify", function () {
 		});
 
 		it("reports revoked=true and still reports hashMatch after revocation", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			await univerify.write.revokeCertificate([certificateId], {
@@ -1197,9 +1293,9 @@ describe("Univerify", function () {
 
 		it("still verifies a certificate issued by an issuer that was later suspended", async function () {
 			// The contract deliberately does not track issuer status on the certificate itself.
-			const { univerify, owner, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, owner, alice, student } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment],
+				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 			await univerify.write.suspendIssuer([alice.account.address], {
@@ -1316,7 +1412,7 @@ describe("Univerify", function () {
 		const holderIdentifier = "maria.garcia@udelar.edu";
 
 		it("issues and verifies with buildCredential", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 
 			const built = buildCredential({
 				issuer: alice.account.address,
@@ -1327,7 +1423,7 @@ describe("Univerify", function () {
 			});
 
 			await univerify.write.issueCertificate(
-				[built.certificateId, built.claimsHash, built.recipientCommitment],
+				[built.certificateId, built.claimsHash, built.recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 
@@ -1345,7 +1441,7 @@ describe("Univerify", function () {
 		});
 
 		it("detects tampered claims via hash mismatch", async function () {
-			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
 
 			const built = buildCredential({
 				issuer: alice.account.address,
@@ -1356,7 +1452,7 @@ describe("Univerify", function () {
 			});
 
 			await univerify.write.issueCertificate(
-				[built.certificateId, built.claimsHash, built.recipientCommitment],
+				[built.certificateId, built.claimsHash, built.recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
 

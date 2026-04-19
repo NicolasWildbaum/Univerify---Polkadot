@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+/// @notice Minimal interface to the soulbound NFT minted on issuance. The
+///         registry calls into it atomically from `issueCertificate` so the
+///         student wallet receives the token in the same transaction.
+interface ICertificateNft {
+	function mintFor(address to, bytes32 certificateId) external returns (uint256);
+}
+
 /// @title Univerify — Federated Academic Credential Registry
 /// @notice Issuers are universities. A small set of **genesis** universities is
 ///         activated at deployment; new universities self-apply and enter a
@@ -14,7 +21,9 @@ pragma solidity ^0.8.28;
 ///
 ///         Verification is presentation-based: a verifier recomputes
 ///         `claimsHash` off-chain and calls `verifyCertificate`. No PII or
-///         holder identity is stored on-chain.
+///         holder identity is stored on-chain — only the student's wallet
+///         address as the recipient of the soulbound NFT minted by
+///         `CertificateNft` (`certificateNft`).
 contract Univerify {
 	// ── Types ───────────────────────────────────────────────────────────
 
@@ -79,10 +88,14 @@ contract Univerify {
 	error InvalidCertificateId();
 	error InvalidClaimsHash();
 	error InvalidRecipientCommitment();
+	error InvalidStudentAddress();
 	error CertificateAlreadyExists();
 	error CertificateNotFound();
 	error CertificateAlreadyRevoked();
 	error NotCertificateIssuer();
+
+	error NftAlreadySet();
+	error NftNotConfigured();
 
 	// ── Constants ───────────────────────────────────────────────────────
 
@@ -117,6 +130,12 @@ contract Univerify {
 	/// @notice Certificates keyed by `certificateId`.
 	mapping(bytes32 => Certificate) public certificates;
 
+	/// @notice Soulbound NFT contract that mirrors certificate ownership in
+	///         the student's wallet. Set once, post-deploy, by the owner via
+	///         `setCertificateNft` (avoids the chicken-and-egg of the NFT
+	///         needing this contract's address in its constructor).
+	address public certificateNft;
+
 	// ── Events ──────────────────────────────────────────────────────────
 
 	event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -127,8 +146,13 @@ contract Univerify {
 	event IssuerSuspended(address indexed issuer);
 	event IssuerUnsuspended(address indexed issuer);
 
-	event CertificateIssued(bytes32 indexed certificateId, address indexed issuer);
+	event CertificateIssued(
+		bytes32 indexed certificateId,
+		address indexed issuer,
+		address indexed student
+	);
 	event CertificateRevoked(bytes32 indexed certificateId, address indexed issuer);
+	event CertificateNftSet(address indexed nft);
 
 	// ── Modifiers ───────────────────────────────────────────────────────
 
@@ -258,18 +282,40 @@ contract Univerify {
 		emit OwnershipTransferred(prev, newOwner);
 	}
 
+	/// @notice Wire up the soulbound `CertificateNft` contract. Settable
+	///         exactly once by the deploy script, immediately after both
+	///         contracts exist on-chain. After that, issuance always mints.
+	///         We keep this as a separate one-shot setter (rather than a
+	///         constructor argument) to avoid the circular dependency
+	///         between the two contracts at construction time.
+	function setCertificateNft(address nft) external onlyOwner {
+		if (nft == address(0)) revert ZeroAddress();
+		if (certificateNft != address(0)) revert NftAlreadySet();
+		certificateNft = nft;
+		emit CertificateNftSet(nft);
+	}
+
 	// ── Certificate Lifecycle ───────────────────────────────────────────
 
-	/// @notice Issue a new verifiable credential record. Only Active issuers.
+	/// @notice Issue a new verifiable credential record and mint the
+	///         corresponding soulbound NFT to the student's wallet
+	///         atomically. Only Active issuers may call.
+	/// @param  studentAddress Wallet that receives the soulbound NFT. The
+	///                        registry continues to omit any PII; the wallet
+	///                        is the only on-chain link to the holder.
 	function issueCertificate(
 		bytes32 certificateId,
 		bytes32 claimsHash,
-		bytes32 recipientCommitment
+		bytes32 recipientCommitment,
+		address studentAddress
 	) external onlyActiveIssuer returns (bytes32) {
 		if (certificateId == bytes32(0)) revert InvalidCertificateId();
 		if (claimsHash == bytes32(0)) revert InvalidClaimsHash();
 		if (recipientCommitment == bytes32(0)) revert InvalidRecipientCommitment();
+		if (studentAddress == address(0)) revert InvalidStudentAddress();
 		if (certificates[certificateId].issuer != address(0)) revert CertificateAlreadyExists();
+		address nft = certificateNft;
+		if (nft == address(0)) revert NftNotConfigured();
 
 		certificates[certificateId] = Certificate({
 			issuer: msg.sender,
@@ -279,7 +325,12 @@ contract Univerify {
 			revoked: false
 		});
 
-		emit CertificateIssued(certificateId, msg.sender);
+		emit CertificateIssued(certificateId, msg.sender, studentAddress);
+
+		// Atomic mint: any failure on the NFT side reverts the entire
+		// issuance, so registry state and NFT supply can never diverge.
+		ICertificateNft(nft).mintFor(studentAddress, certificateId);
+
 		return certificateId;
 	}
 

@@ -4,7 +4,12 @@ import "@nomicfoundation/hardhat-verify";
 import { vars } from "hardhat/config";
 
 const config: HardhatUserConfig = {
-	solidity: "0.8.28",
+	solidity: {
+		version: "0.8.28",
+		// OpenZeppelin v5 uses `mcopy` (introduced in Cancun). Without
+		// this override solc defaults to "paris" and OZ fails to compile.
+		settings: { evmVersion: "cancun" },
+	},
 	networks: {
 		local: {
 			// Local node Ethereum RPC endpoint
