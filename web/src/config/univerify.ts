@@ -52,9 +52,24 @@ export const univerifyAbi = [
 			{ name: "certificateId", type: "bytes32" },
 			{ name: "claimsHash", type: "bytes32" },
 			{ name: "recipientCommitment", type: "bytes32" },
+			{ name: "studentAddress", type: "address" },
 		],
 		outputs: [{ name: "", type: "bytes32" }],
 		stateMutability: "nonpayable",
+	},
+	{
+		type: "function",
+		name: "setCertificateNft",
+		inputs: [{ name: "nft", type: "address" }],
+		outputs: [],
+		stateMutability: "nonpayable",
+	},
+	{
+		type: "function",
+		name: "certificateNft",
+		inputs: [],
+		outputs: [{ name: "", type: "address" }],
+		stateMutability: "view",
 	},
 	{
 		type: "function",
@@ -219,6 +234,7 @@ export const univerifyAbi = [
 		inputs: [
 			{ name: "certificateId", type: "bytes32", indexed: true },
 			{ name: "issuer", type: "address", indexed: true },
+			{ name: "student", type: "address", indexed: true },
 		],
 	},
 	{
@@ -228,6 +244,11 @@ export const univerifyAbi = [
 			{ name: "certificateId", type: "bytes32", indexed: true },
 			{ name: "issuer", type: "address", indexed: true },
 		],
+	},
+	{
+		type: "event",
+		name: "CertificateNftSet",
+		inputs: [{ name: "nft", type: "address", indexed: true }],
 	},
 ] as const;
 
