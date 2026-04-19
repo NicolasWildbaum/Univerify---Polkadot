@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { type Address, type Hex } from "viem";
 import { univerifyAbi } from "../config/univerify";
 import { getPublicClient } from "../config/evm";
@@ -10,7 +11,23 @@ import {
 	type CredentialClaims,
 } from "../utils/credential";
 
-type Mode = "json" | "form";
+type Mode = "link" | "json" | "form";
+
+const CERT_ID_RE = /^0x[0-9a-fA-F]{64}$/;
+
+/// Pull a certificateId out of any of:
+///   - bare hex id: `0xabc…`
+///   - hash route fragment: `#/verify/cert/0xabc…`
+///   - full URL with hash router: `http://host/#/verify/cert/0xabc…`
+///   - trailing slashes / whitespace
+/// Returns `null` if no valid id is found.
+function extractCertificateId(input: string): Hex | null {
+	const trimmed = input.trim();
+	if (!trimmed) return null;
+	const match = trimmed.match(/0x[0-9a-fA-F]{64}/);
+	if (!match) return null;
+	return match[0] as Hex;
+}
 
 interface VerificationResult {
 	exists: boolean;
@@ -46,10 +63,20 @@ const EXAMPLE_JSON = `{
 }`;
 
 export default function VerificationPage() {
+	const navigate = useNavigate();
 	const ethRpcUrl = useChainStore((s) => s.ethRpcUrl);
 	const scopedStorageKey = `${STORAGE_KEY_PREFIX}:${ethRpcUrl}`;
 
-	const [mode, setMode] = useState<Mode>("json");
+	const [mode, setMode] = useState<Mode>("link");
+
+	// ── Link / ID mode state ─────────────────────────────────────────
+	// We keep this mode UI-only (no on-chain reads here): once we extract
+	// a valid id, navigate to the public verifier route, which already
+	// does all the on-chain reads and renders the verdict. This keeps
+	// "verify by id" logic in exactly one place.
+	const [linkInput, setLinkInput] = useState("");
+	const linkCertId = useMemo(() => extractCertificateId(linkInput), [linkInput]);
+	const linkInputHasContent = linkInput.trim().length > 0;
 
 	// Contract address (defaults to deployments.univerify, per-rpc-url override via localStorage).
 	const defaultAddress = deployments.univerify ?? "";
@@ -92,6 +119,10 @@ export default function VerificationPage() {
 	};
 
 	const canVerify = useMemo(() => {
+		// `link` mode delegates to PublicVerifyPage and doesn't need a
+		// contract address typed in here (the public page reads from
+		// `deployments.univerify` directly).
+		if (mode === "link") return linkCertId !== null;
 		if (!contractAddress) return false;
 		if (mode === "json") return jsonText.trim().length > 0;
 		return (
@@ -101,10 +132,20 @@ export default function VerificationPage() {
 			formClaims.institutionName.trim().length > 0 &&
 			formClaims.issuanceDate.trim().length > 0
 		);
-	}, [contractAddress, mode, jsonText, formCertificateId, formClaims]);
+	}, [contractAddress, mode, jsonText, formCertificateId, formClaims, linkCertId]);
 
 	async function handleVerify() {
 		resetOutputs();
+
+		// Link mode: just navigate. The public page handles everything.
+		if (mode === "link") {
+			if (!linkCertId) {
+				setError("Paste a verification link or a 0x-prefixed certificate id.");
+				return;
+			}
+			navigate(`/verify/cert/${linkCertId}`);
+			return;
+		}
 
 		if (!contractAddress) {
 			setError("Enter a contract address first.");
@@ -194,49 +235,64 @@ export default function VerificationPage() {
 			<div className="space-y-2">
 				<h1 className="page-title text-accent-blue">Verify Credential</h1>
 				<p className="text-text-secondary">
-					Public verification of a Univerify academic credential. Paste the credential
-					JSON (or fill in the fields manually) and we recompute the claims hash on-chain
-					against the Univerify contract.
+					Public verification of a Univerify academic credential. Pick a mode below:
+					paste the public link (or just the certificate id), paste the full credential
+					JSON, or fill the fields manually. The link mode confirms existence and status;
+					the JSON / form modes additionally check that the claims haven't been tampered
+					with.
 				</p>
 			</div>
 
 			{/* Contract address */}
 			<div className="card space-y-4">
-				<div>
-					<label className="label">Univerify Contract Address</label>
-					<div className="flex gap-2">
-						<input
-							type="text"
-							value={contractAddress}
-							onChange={(e) => {
-								saveAddress(e.target.value);
-								resetOutputs();
-							}}
-							placeholder="0x..."
-							className="input-field w-full"
-						/>
-						{defaultAddress && contractAddress !== defaultAddress && (
-							<button
-								onClick={() => {
-									saveAddress(defaultAddress);
+				{mode !== "link" && (
+					<div>
+						<label className="label">Univerify Contract Address</label>
+						<div className="flex gap-2">
+							<input
+								type="text"
+								value={contractAddress}
+								onChange={(e) => {
+									saveAddress(e.target.value);
 									resetOutputs();
 								}}
-								className="btn-secondary text-xs whitespace-nowrap"
-							>
-								Reset
-							</button>
+								placeholder="0x..."
+								className="input-field w-full"
+							/>
+							{defaultAddress && contractAddress !== defaultAddress && (
+								<button
+									onClick={() => {
+										saveAddress(defaultAddress);
+										resetOutputs();
+									}}
+									className="btn-secondary text-xs whitespace-nowrap"
+								>
+									Reset
+								</button>
+							)}
+						</div>
+						{!defaultAddress && (
+							<p className="text-xs text-text-muted mt-2">
+								<code>deployments.univerify</code> is not set. Deploy the
+								Univerify contract or paste the address manually.
+							</p>
 						)}
 					</div>
-					{!defaultAddress && (
-						<p className="text-xs text-text-muted mt-2">
-							<code>deployments.univerify</code> is not set. Deploy the Univerify
-							contract or paste the address manually.
-						</p>
-					)}
-				</div>
+				)}
 
 				{/* Mode tabs */}
-				<div className="flex gap-2">
+				<div className="flex gap-2 flex-wrap">
+					<button
+						onClick={() => {
+							setMode("link");
+							resetOutputs();
+						}}
+						className={`btn-secondary text-xs ${
+							mode === "link" ? "!bg-white/[0.08] !text-text-primary" : ""
+						}`}
+					>
+						Link / ID
+					</button>
 					<button
 						onClick={() => {
 							setMode("json");
@@ -261,7 +317,47 @@ export default function VerificationPage() {
 					</button>
 				</div>
 
-				{mode === "json" ? (
+				{mode === "link" ? (
+					<div>
+						<label className="label">Verification link or certificate ID</label>
+						<input
+							type="text"
+							value={linkInput}
+							onChange={(e) => {
+								setLinkInput(e.target.value);
+								resetOutputs();
+							}}
+							placeholder="https://…/#/verify/cert/0x…  or  0x…"
+							className="input-field w-full"
+							spellCheck={false}
+							onKeyDown={(e) => {
+								if (e.key === "Enter" && linkCertId) {
+									navigate(`/verify/cert/${linkCertId}`);
+								}
+							}}
+						/>
+						<p className="text-xs text-text-muted mt-1">
+							Paste the public link the issuer or student shared with you, or the
+							raw <code>certificateId</code>. We'll open the public verifier which
+							confirms existence, issuer, student wallet, and revocation status
+							on-chain — no JSON or wallet required.
+							{linkInputHasContent && !linkCertId ? (
+								<span className="block text-accent-red mt-1">
+									Couldn't find a 0x-prefixed 32-byte certificate id in the
+									input.
+								</span>
+							) : null}
+							{linkCertId ? (
+								<span className="block text-accent-green mt-1">
+									Found id:{" "}
+									<code className="font-mono text-text-primary break-all">
+										{linkCertId}
+									</code>
+								</span>
+							) : null}
+						</p>
+					</div>
+				) : mode === "json" ? (
 					<div>
 						<div className="flex items-center justify-between">
 							<label className="label">Credential JSON</label>
@@ -363,7 +459,11 @@ export default function VerificationPage() {
 						disabled={!canVerify || loading}
 						className="btn-primary"
 					>
-						{loading ? "Verifying..." : "Verify"}
+						{loading
+							? "Verifying..."
+							: mode === "link"
+								? "Open public verifier"
+								: "Verify"}
 					</button>
 					{error && <p className="text-sm font-medium text-accent-red">{error}</p>}
 				</div>
