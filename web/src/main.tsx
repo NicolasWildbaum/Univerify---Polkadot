@@ -13,6 +13,8 @@ const StatementStorePage = lazy(() => import("./pages/StatementStorePage"));
 const VerificationPage = lazy(() => import("./pages/VerificationPage"));
 const UniverifyIssuerPage = lazy(() => import("./pages/UniverifyIssuerPage"));
 const GovernancePage = lazy(() => import("./pages/GovernancePage"));
+const MyCertificatesPage = lazy(() => import("./pages/MyCertificatesPage"));
+const PublicVerifyPage = lazy(() => import("./pages/PublicVerifyPage"));
 
 const routeFallback = (
 	<div className="card animate-pulse">
@@ -95,6 +97,22 @@ createRoot(document.getElementById("root")!).render(
 						element={
 							<Suspense fallback={routeFallback}>
 								<GovernancePage />
+							</Suspense>
+						}
+					/>
+					<Route
+						path="my-certificates"
+						element={
+							<Suspense fallback={routeFallback}>
+								<MyCertificatesPage />
+							</Suspense>
+						}
+					/>
+					<Route
+						path="verify/cert/:certificateId"
+						element={
+							<Suspense fallback={routeFallback}>
+								<PublicVerifyPage />
 							</Suspense>
 						}
 					/>
