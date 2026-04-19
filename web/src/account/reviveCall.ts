@@ -1,0 +1,144 @@
+// Sign and submit a Univerify contract call on behalf of the connected
+// Polkadot wallet.
+//
+// Why not viem? viem needs an Ethereum-format private key (or an EIP-1193
+// provider). Polkadot injected wallets only sign Substrate extrinsics, so
+// we reach the contract via `pallet_revive::call` instead of eth-rpc. The
+// pallet's AccountId32Mapper translates the SS58-origin into an H160 before
+// entering the contract — that H160 is exactly `ss58ToEvmAddress(...)`, so
+// on-chain permission checks against `msg.sender` stay consistent with the
+// address we show in the UI.
+//
+// Reads still go through viem (`getPublicClient`), which is faster and
+// doesn't require descriptors for the pallet.
+
+import { encodeFunctionData, type Abi, type Address, type Hex } from "viem";
+import { Binary, FixedSizeBinary, type PolkadotClient, type PolkadotSigner } from "polkadot-api";
+import { getClient } from "../hooks/useChain";
+
+// Per-call resource ceilings. A Substrate parachain block is ~2 s of
+// reference compute (`WEIGHT_REF_TIME_PER_SECOND = 1e12`) with ~0.5 MB of
+// PoV. Anything above what fits in a block is rejected pre-dispatch with
+// `Invalid.ExhaustsResources`, so we stay well under the per-extrinsic
+// slice. The contract only burns a few ms; unused weight is refunded.
+const WEIGHT_REF_TIME = 500_000_000_000n; // 0.5 s — quarter of a block
+const WEIGHT_PROOF_SIZE = 262_144n; // 256 KiB
+const STORAGE_DEPOSIT_LIMIT = 100_000_000_000_000_000n; // 0.1 UNIT
+
+interface SubmitOptions {
+	wsUrl: string;
+	signer: PolkadotSigner;
+	/** H160 that `pallet-revive` will see as `msg.sender`. Used to check
+	 *  whether the signer is already mapped and skip the one-time
+	 *  `map_account` extrinsic if so. */
+	signerEvmAddress: Address;
+	contractAddress: Address;
+	abi: Abi;
+	// `unknown[]` rather than `readonly unknown[]` to stay structural with
+	// the viem ABI encoder's input surface without paying a generics tax here.
+	args: unknown[];
+	functionName: string;
+	/** Native value to attach to the call. Defaults to 0. */
+	value?: bigint;
+}
+
+export interface SubmitResult {
+	txHash: Hex;
+	block: { hash: string; number: number; index: number };
+}
+
+export async function submitReviveCall({
+	wsUrl,
+	signer,
+	signerEvmAddress,
+	contractAddress,
+	abi,
+	functionName,
+	args,
+	value = 0n,
+}: SubmitOptions): Promise<SubmitResult> {
+	const data = encodeFunctionData({
+		abi,
+		functionName,
+		args: args as never,
+	}) as Hex;
+
+	const client: PolkadotClient = getClient(wsUrl);
+	// `getUnsafeApi` is deliberately un-typed: `Revive` isn't generated into
+	// the PAPI descriptors for this project, so we rely on the runtime
+	// metadata and pallet-revive's stable call signature:
+	// `call(dest, value, weight_limit, storage_deposit_limit, data)`.
+	const api = client.getUnsafeApi();
+
+	// One-time on-chain mapping: pallet-revive's `AccountId32Mapper` needs
+	// `OriginalAccount[h160] == signer` so it can resolve `msg.sender` back
+	// to the 32-byte origin during dispatch. Eth-derived accounts (pubkey
+	// suffix `0xee…ee`) are implicitly mapped; everything else must call
+	// `map_account` once. We always check storage first so the check is
+	// idempotent across reloads.
+	await ensureMapped(api, signer, signerEvmAddress);
+
+	const tx = api.tx.Revive.call({
+		dest: FixedSizeBinary.fromHex(contractAddress),
+		value,
+		weight_limit: {
+			ref_time: WEIGHT_REF_TIME,
+			proof_size: WEIGHT_PROOF_SIZE,
+		},
+		storage_deposit_limit: STORAGE_DEPOSIT_LIMIT,
+		data: Binary.fromHex(data),
+	});
+
+	const result = await tx.signAndSubmit(signer);
+	if (!result.ok) {
+		const err = result.dispatchError;
+		throw new ReviveDispatchError(err);
+	}
+	return {
+		txHash: result.txHash as Hex,
+		block: result.block,
+	};
+}
+
+// Register the signer's (AccountId32 → H160) pairing in pallet-revive if it
+// isn't there yet. Costs one small Substrate extrinsic the first time; no-op
+// afterwards. We treat any dispatch error here as fatal because without a
+// mapping the subsequent `Revive.call` would error with `AccountUnmapped`.
+async function ensureMapped(
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	api: any,
+	signer: PolkadotSigner,
+	signerEvmAddress: Address,
+): Promise<void> {
+	const existing = await api.query.Revive.OriginalAccount.getValue(
+		FixedSizeBinary.fromHex(signerEvmAddress),
+	);
+	if (existing !== undefined) return;
+
+	const mapTx = api.tx.Revive.map_account();
+	const mapResult = await mapTx.signAndSubmit(signer);
+	if (!mapResult.ok) {
+		throw new ReviveDispatchError(mapResult.dispatchError);
+	}
+}
+
+export class ReviveDispatchError extends Error {
+	readonly dispatchError: { type: string; value: unknown };
+	constructor(dispatchError: { type: string; value: unknown }) {
+		// Try to extract a useful message, including pallet-revive's
+		// `ContractReverted` variant which wraps the ABI error bytes.
+		super(formatDispatchError(dispatchError));
+		this.dispatchError = dispatchError;
+	}
+}
+
+function formatDispatchError(err: { type: string; value: unknown }): string {
+	if (!err) return "Unknown dispatch error";
+	if (err.type === "Module" && err.value && typeof err.value === "object") {
+		const v = err.value as { type?: string; value?: { type?: string } };
+		const pallet = v.type ?? "Module";
+		const variant = v.value?.type ?? "?";
+		return `${pallet}.${variant}`;
+	}
+	return err.type;
+}
