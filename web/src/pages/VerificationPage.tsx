@@ -365,9 +365,7 @@ export default function VerificationPage() {
 					>
 						{loading ? "Verifying..." : "Verify"}
 					</button>
-					{error && (
-						<p className="text-sm font-medium text-accent-red">{error}</p>
-					)}
+					{error && <p className="text-sm font-medium text-accent-red">{error}</p>}
 				</div>
 			</div>
 
@@ -414,9 +412,7 @@ function ResultCard({ result }: { result: VerificationResult }) {
 
 	const v = verdictStyles[verdict];
 	const issuedAt =
-		result.issuedAt > 0n
-			? new Date(Number(result.issuedAt) * 1000).toISOString()
-			: "—";
+		result.issuedAt > 0n ? new Date(Number(result.issuedAt) * 1000).toISOString() : "—";
 
 	return (
 		<div className="card space-y-4 animate-fade-in">
@@ -451,11 +447,7 @@ function Field({ label, value, mono = false }: { label: string; value: string; m
 			<p className="text-xs font-medium text-text-tertiary uppercase tracking-wider">
 				{label}
 			</p>
-			<p
-				className={`text-text-primary break-all ${
-					mono ? "font-mono text-xs" : "text-sm"
-				}`}
-			>
+			<p className={`text-text-primary break-all ${mono ? "font-mono text-xs" : "text-sm"}`}>
 				{value}
 			</p>
 		</div>

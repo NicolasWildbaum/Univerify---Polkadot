@@ -48,12 +48,7 @@ export function computeClaimsHash(claims: CredentialClaims): Hex {
 				{ type: "string", name: "institutionName" },
 				{ type: "string", name: "issuanceDate" },
 			],
-			[
-				claims.degreeTitle,
-				claims.holderName,
-				claims.institutionName,
-				claims.issuanceDate,
-			],
+			[claims.degreeTitle, claims.holderName, claims.institutionName, claims.issuanceDate],
 		),
 	);
 }
@@ -128,10 +123,7 @@ export function buildCredential(params: {
 } {
 	const certificateId = deriveCertificateId(params.issuer, params.internalRef);
 	const claimsHash = computeClaimsHash(params.claims);
-	const recipientCommitment = computeRecipientCommitment(
-		params.secret,
-		params.holderIdentifier,
-	);
+	const recipientCommitment = computeRecipientCommitment(params.secret, params.holderIdentifier);
 
 	return {
 		credential: {
@@ -162,7 +154,10 @@ export function parseVerifiableCredential(
 	const v = value as Record<string, unknown>;
 
 	if (typeof v.certificateId !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(v.certificateId)) {
-		return { ok: false, error: "Missing or invalid `certificateId` (expected 0x-prefixed bytes32)." };
+		return {
+			ok: false,
+			error: "Missing or invalid `certificateId` (expected 0x-prefixed bytes32).",
+		};
 	}
 	if (typeof v.issuer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(v.issuer)) {
 		return { ok: false, error: "Missing or invalid `issuer` (expected 0x-prefixed address)." };
