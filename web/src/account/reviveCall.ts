@@ -17,13 +17,23 @@ import { Binary, FixedSizeBinary, type PolkadotClient, type PolkadotSigner } fro
 import { getClient } from "../hooks/useChain";
 
 // Per-call resource ceilings. A Substrate parachain block is ~2 s of
-// reference compute (`WEIGHT_REF_TIME_PER_SECOND = 1e12`) with ~0.5 MB of
-// PoV. Anything above what fits in a block is rejected pre-dispatch with
-// `Invalid.ExhaustsResources`, so we stay well under the per-extrinsic
-// slice. The contract only burns a few ms; unused weight is refunded.
-const WEIGHT_REF_TIME = 500_000_000_000n; // 0.5 s — quarter of a block
-const WEIGHT_PROOF_SIZE = 262_144n; // 256 KiB
-const STORAGE_DEPOSIT_LIMIT = 100_000_000_000_000_000n; // 0.1 UNIT
+// reference compute (`WEIGHT_REF_TIME_PER_SECOND = 1e12`) with ~5 MiB of
+// PoV. The transaction queue rejects extrinsics whose `weight_limit`
+// exceeds the per-extrinsic cap with `Invalid.ExhaustsResources` before
+// they execute, so we have to stay well under the block budget. Unused
+// weight and unused storage deposit are refunded post-dispatch, so the
+// signer never pays for the slack — but over-asking is fatal.
+//
+// The proof_size budget is the binding constraint here: every new MPT
+// entry adds a few KiB of merkle proof to the PoV, and `issueCertificate`
+// + cross-contract `mintFor` (ERC721Enumerable bookkeeping) writes ~10
+// entries. 1 MiB comfortably covers that without bumping into the
+// per-extrinsic cap. The previous value (256 KiB) was sized for the
+// pre-NFT registry-only write and was the cause of the contract reverts
+// we saw after wiring the soulbound NFT.
+const WEIGHT_REF_TIME = 800_000_000_000n; // 0.8 s — within the per-extrinsic cap
+const WEIGHT_PROOF_SIZE = 1_048_576n; // 1 MiB — ~4x the pre-NFT limit
+const STORAGE_DEPOSIT_LIMIT = 100_000_000_000_000_000n; // generous, refunded
 
 interface SubmitOptions {
 	wsUrl: string;
