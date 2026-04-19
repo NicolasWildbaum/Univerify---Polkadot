@@ -1,14 +1,13 @@
 // Univerify federated-governance UI.
 //
 // Architecture notes:
-//   - Account selection goes through `useAccountSource()` so the page is
-//     wallet-ready: swap the dev source for a wallet source later, this file
-//     does not change.
-//   - Contract reads use a public viem client; writes go through the wallet
-//     client returned by the AccountSource. Both are constructed per call so
-//     account/RPC changes never leave stale clients hanging.
-//   - Revert reasons go through the shared `extractRevertName` so the same
-//     known-error list is used everywhere.
+//   - The connected Polkadot wallet (see `account/wallet.ts`) is the sole
+//     source of identity. The old manual "Caller account" selector is gone.
+//   - Contract reads use viem; writes are Substrate extrinsics routed through
+//     `pallet_revive::call` via `submitReviveCall`, so the injected wallet's
+//     signer can drive them.
+//   - Permission gating (owner / active issuer) comes exclusively from
+//     on-chain reads (`owner`, `getIssuer`); no frontend-only heuristics.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Address, Hex } from "viem";
@@ -16,8 +15,12 @@ import { univerifyAbi, IssuerStatus, issuerStatusLabel } from "../config/univeri
 import { deployments } from "../config/deployments";
 import { getPublicClient } from "../config/evm";
 import { useChainStore } from "../store/chainStore";
-import { useAccountSource } from "../account/useAccountSource";
-import { AccountSelector } from "../account/AccountSelector";
+import {
+	useWalletStore,
+	selectConnectedEvmAddress,
+	selectConnectedSigner,
+} from "../account/wallet";
+import { submitReviveCall } from "../account/reviveCall";
 import { extractRevertName, type UniverifyErrorName } from "../utils/contractErrors";
 
 const STORAGE_KEY_PREFIX = "univerify:governance:address";
@@ -52,7 +55,6 @@ type LoadState =
 type TxState =
 	| { kind: "idle" }
 	| { kind: "sending"; label: string }
-	| { kind: "waiting"; hash: Hex; label: string }
 	| { kind: "success"; hash: Hex; label: string }
 	| { kind: "error"; message: string };
 
@@ -60,17 +62,17 @@ type TxState =
 
 export default function GovernancePage() {
 	const ethRpcUrl = useChainStore((s) => s.ethRpcUrl);
-	const accountSource = useAccountSource();
-	const accounts = accountSource.listAccounts();
+	const wsUrl = useChainStore((s) => s.wsUrl);
+	const walletStatus = useWalletStore((s) => s.status);
+	const callerAddress = useWalletStore(selectConnectedEvmAddress);
+	const signer = useWalletStore(selectConnectedSigner);
+	const isWalletConnected = walletStatus.kind === "connected";
+
 	const scopedStorageKey = `${STORAGE_KEY_PREFIX}:${ethRpcUrl}`;
 
 	const defaultAddress = deployments.univerify ?? "";
 	const [contractAddress, setContractAddress] = useState(
 		() => localStorage.getItem(scopedStorageKey) || defaultAddress,
-	);
-
-	const [selectedAccountId, setSelectedAccountId] = useState<string>(
-		() => accounts[0]?.id ?? "0",
 	);
 
 	const [load, setLoad] = useState<LoadState>({ kind: "idle" });
@@ -85,12 +87,6 @@ export default function GovernancePage() {
 	const [adminTarget, setAdminTarget] = useState<string>("");
 	const [transferTarget, setTransferTarget] = useState<string>("");
 
-	const selectedAccount = useMemo(
-		() => accounts.find((a) => a.id === selectedAccountId) ?? accounts[0],
-		[accounts, selectedAccountId],
-	);
-	const callerAddress = (selectedAccount?.address ?? null) as Address | null;
-
 	function saveAddress(address: string) {
 		setContractAddress(address);
 		if (address) localStorage.setItem(scopedStorageKey, address);
@@ -98,9 +94,6 @@ export default function GovernancePage() {
 	}
 
 	// ── Contract read pipeline ───────────────────────────────────────
-	// We only enter the effect when we actually have a contract address; the
-	// "no address" case is handled at render time so the effect never has to
-	// synchronously reset state (which would trigger a cascading render).
 	useEffect(() => {
 		if (!contractAddress) return;
 		let cancelled = false;
@@ -124,21 +117,23 @@ export default function GovernancePage() {
 		};
 	}, [contractAddress, ethRpcUrl, reloadToken]);
 
-	// Render-side projection: when no contract is configured, force the idle
-	// state regardless of any stale `load` from a previous address.
 	const effectiveLoad: LoadState = contractAddress ? load : { kind: "idle" };
-
 	const refresh = useCallback(() => setReloadToken((t) => t + 1), []);
 
-	// ── Write helpers ────────────────────────────────────────────────
+	// ── Write helper ────────────────────────────────────────────────
+	// Centralized so every governance action shares the same preflight checks
+	// (contract present, wallet connected) and error/status plumbing.
 	const runTx = useCallback(
-		async (label: string, fn: (addr: Address) => Promise<Hex>) => {
+		async (label: string, functionName: string, args: unknown[]) => {
 			if (!contractAddress) {
 				setTx({ kind: "error", message: "Enter a contract address first." });
 				return;
 			}
-			if (!selectedAccount) {
-				setTx({ kind: "error", message: "Select an account first." });
+			if (!signer || !callerAddress) {
+				setTx({
+					kind: "error",
+					message: "Connect a Polkadot wallet first to sign governance transactions.",
+				});
 				return;
 			}
 			setTx({ kind: "sending", label });
@@ -153,17 +148,23 @@ export default function GovernancePage() {
 					});
 					return;
 				}
-				const hash = await fn(addr);
-				setTx({ kind: "waiting", hash, label });
-				await publicClient.waitForTransactionReceipt({ hash });
-				setTx({ kind: "success", hash, label });
+				const result = await submitReviveCall({
+					wsUrl,
+					signer,
+					signerEvmAddress: callerAddress,
+					contractAddress: addr,
+					abi: univerifyAbi as unknown as import("viem").Abi,
+					functionName,
+					args,
+				});
+				setTx({ kind: "success", hash: result.txHash, label });
 				refresh();
 			} catch (err) {
 				console.error(`${label} failed:`, err);
 				setTx({ kind: "error", message: friendlyError(label, err) });
 			}
 		},
-		[contractAddress, ethRpcUrl, selectedAccount, refresh],
+		[contractAddress, ethRpcUrl, wsUrl, signer, callerAddress, refresh],
 	);
 
 	async function handleApply() {
@@ -172,31 +173,11 @@ export default function GovernancePage() {
 			setTx({ kind: "error", message: "Enter a university name." });
 			return;
 		}
-		await runTx("Apply", async (addr) => {
-			const wallet = await accountSource.getWalletClient(selectedAccountId, ethRpcUrl);
-			return wallet.writeContract({
-				address: addr,
-				abi: univerifyAbi,
-				functionName: "applyAsIssuer",
-				args: [name, applyMetadataHash],
-				account: wallet.account!,
-				chain: wallet.chain,
-			});
-		});
+		await runTx("Apply", "applyAsIssuer", [name, applyMetadataHash]);
 	}
 
 	async function handleApprove(candidate: Address) {
-		await runTx(`Approve ${shortAddr(candidate)}`, async (addr) => {
-			const wallet = await accountSource.getWalletClient(selectedAccountId, ethRpcUrl);
-			return wallet.writeContract({
-				address: addr,
-				abi: univerifyAbi,
-				functionName: "approveIssuer",
-				args: [candidate],
-				account: wallet.account!,
-				chain: wallet.chain,
-			});
-		});
+		await runTx(`Approve ${shortAddr(candidate)}`, "approveIssuer", [candidate]);
 	}
 
 	async function handleSuspend() {
@@ -205,17 +186,7 @@ export default function GovernancePage() {
 			setTx({ kind: "error", message: "Enter a valid issuer address to suspend." });
 			return;
 		}
-		await runTx(`Suspend ${shortAddr(target)}`, async (addr) => {
-			const wallet = await accountSource.getWalletClient(selectedAccountId, ethRpcUrl);
-			return wallet.writeContract({
-				address: addr,
-				abi: univerifyAbi,
-				functionName: "suspendIssuer",
-				args: [target],
-				account: wallet.account!,
-				chain: wallet.chain,
-			});
-		});
+		await runTx(`Suspend ${shortAddr(target)}`, "suspendIssuer", [target]);
 	}
 
 	async function handleUnsuspend() {
@@ -224,17 +195,7 @@ export default function GovernancePage() {
 			setTx({ kind: "error", message: "Enter a valid issuer address to unsuspend." });
 			return;
 		}
-		await runTx(`Unsuspend ${shortAddr(target)}`, async (addr) => {
-			const wallet = await accountSource.getWalletClient(selectedAccountId, ethRpcUrl);
-			return wallet.writeContract({
-				address: addr,
-				abi: univerifyAbi,
-				functionName: "unsuspendIssuer",
-				args: [target],
-				account: wallet.account!,
-				chain: wallet.chain,
-			});
-		});
+		await runTx(`Unsuspend ${shortAddr(target)}`, "unsuspendIssuer", [target]);
 	}
 
 	async function handleTransferOwnership() {
@@ -243,17 +204,7 @@ export default function GovernancePage() {
 			setTx({ kind: "error", message: "Enter a valid new owner address." });
 			return;
 		}
-		await runTx(`Transfer ownership → ${shortAddr(target)}`, async (addr) => {
-			const wallet = await accountSource.getWalletClient(selectedAccountId, ethRpcUrl);
-			return wallet.writeContract({
-				address: addr,
-				abi: univerifyAbi,
-				functionName: "transferOwnership",
-				args: [target],
-				account: wallet.account!,
-				chain: wallet.chain,
-			});
-		});
+		await runTx(`Transfer ownership → ${shortAddr(target)}`, "transferOwnership", [target]);
 	}
 
 	// ── Derived view-model ───────────────────────────────────────────
@@ -277,7 +228,7 @@ export default function GovernancePage() {
 	const pendingIssuers = data?.issuers.filter((i) => i.status === IssuerStatus.Pending) ?? [];
 	const suspendedIssuers = data?.issuers.filter((i) => i.status === IssuerStatus.Suspended) ?? [];
 
-	const txDisabled = tx.kind === "sending" || tx.kind === "waiting";
+	const txDisabled = !isWalletConnected || tx.kind === "sending";
 
 	// ── Render ───────────────────────────────────────────────────────
 	return (
@@ -320,18 +271,12 @@ export default function GovernancePage() {
 					)}
 				</div>
 
-				<AccountSelector
-					value={selectedAccountId}
-					onChange={setSelectedAccountId}
-					label="Caller account"
-					helpText="The selected account signs every governance transaction below. Switch accounts to act as a different university."
-				/>
-
-				<CallerSummary
+				<CallerPanel
 					data={data}
 					callerAddress={callerAddress}
 					callerIssuer={callerIssuer}
 					isOwner={isOwner}
+					isWalletConnected={isWalletConnected}
 				/>
 			</div>
 
@@ -411,7 +356,7 @@ export default function GovernancePage() {
 												You cannot approve yourself
 											</span>
 										)}
-										{!callerCanApprove && (
+										{isWalletConnected && !callerCanApprove && (
 											<span className="text-xs text-text-tertiary">
 												Only Active issuers can approve
 											</span>
@@ -428,7 +373,7 @@ export default function GovernancePage() {
 			<div className="card space-y-3">
 				<h2 className="section-title">Apply as issuer</h2>
 				<p className="text-text-secondary text-sm">
-					Submit an application from the selected account. After{" "}
+					Submit an application from the connected wallet account. After{" "}
 					<strong>{data?.approvalThreshold ?? "N"}</strong> approvals from existing Active
 					universities, the application becomes Active automatically.
 				</p>
@@ -472,6 +417,11 @@ export default function GovernancePage() {
 							? "Signing..."
 							: "Apply as issuer"}
 					</button>
+					{!isWalletConnected && (
+						<span className="text-xs text-text-tertiary">
+							Connect a wallet to apply.
+						</span>
+					)}
 					{callerHasApplied && (
 						<span className="text-xs text-text-tertiary">
 							This account is already registered (
@@ -517,7 +467,7 @@ export default function GovernancePage() {
 						</span>
 					) : (
 						<span className="status-badge border bg-white/[0.04] text-text-muted border-white/[0.08]">
-							Read-only — caller is not owner
+							Read-only — connected account is not owner
 						</span>
 					)}
 				</div>
@@ -586,34 +536,54 @@ function RegistryHeader({ load }: { load: LoadState }) {
 	);
 }
 
-function CallerSummary({
+function CallerPanel({
 	data,
 	callerAddress,
 	callerIssuer,
 	isOwner,
+	isWalletConnected,
 }: {
 	data: RegistryView | null;
 	callerAddress: Address | null;
 	callerIssuer: IssuerView | null;
 	isOwner: boolean;
+	isWalletConnected: boolean;
 }) {
-	if (!callerAddress) {
-		return <p className="text-xs text-text-muted">No account selected.</p>;
+	if (!isWalletConnected || !callerAddress) {
+		return (
+			<div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 space-y-1">
+				<p className="text-sm text-text-primary">No wallet connected.</p>
+				<p className="text-xs text-text-muted">
+					Use the <strong>Connect Wallet</strong> button in the header to sign governance
+					transactions.
+				</p>
+			</div>
+		);
 	}
 	const status = callerIssuer ? callerIssuer.status : IssuerStatus.None;
 	return (
-		<div className="flex items-center gap-2 flex-wrap">
-			<StatusBadge status={status} />
-			{isOwner && (
-				<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
-					★ Owner
+		<div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 space-y-2">
+			<div className="flex items-center gap-2 flex-wrap">
+				<span className="text-xs text-text-tertiary uppercase tracking-wider">
+					Connected account (EVM)
 				</span>
-			)}
-			{data && callerIssuer?.status === IssuerStatus.Pending && (
-				<span className="text-xs text-text-tertiary">
-					{callerIssuer.approvalCount} / {data.approvalThreshold} approvals collected
-				</span>
-			)}
+				<code className="text-xs font-mono text-text-primary break-all">
+					{callerAddress}
+				</code>
+			</div>
+			<div className="flex items-center gap-2 flex-wrap">
+				<StatusBadge status={status} />
+				{isOwner && (
+					<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
+						★ Owner
+					</span>
+				)}
+				{data && callerIssuer?.status === IssuerStatus.Pending && (
+					<span className="text-xs text-text-tertiary">
+						{callerIssuer.approvalCount} / {data.approvalThreshold} approvals collected
+					</span>
+				)}
+			</div>
 		</div>
 	);
 }
@@ -666,14 +636,7 @@ function TxBanner({ tx }: { tx: TxState }) {
 	if (tx.kind === "sending") {
 		return (
 			<p className="text-sm text-text-tertiary">
-				Signing <code>{tx.label}</code>…
-			</p>
-		);
-	}
-	if (tx.kind === "waiting") {
-		return (
-			<p className="text-sm text-text-tertiary font-mono break-all">
-				Waiting for receipt — tx: {tx.hash}
+				Signing <code>{tx.label}</code>… approve in your wallet.
 			</p>
 		);
 	}
@@ -757,9 +720,6 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 		approvalCount: Number(s.approvalCount),
 	}));
 
-	// Build the (candidate → set of approvers) map by querying `hasApproved`
-	// for every Pending candidate × every Active issuer. This is N×M reads but
-	// N (pending) is tiny and M (active) is small (~3 in dev). Acceptable.
 	const pending = issuers.filter((i) => i.status === IssuerStatus.Pending);
 	const active = issuers.filter((i) => i.status === IssuerStatus.Active);
 	const approvals = new Map<string, Set<string>>();

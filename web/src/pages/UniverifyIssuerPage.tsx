@@ -1,9 +1,22 @@
+// Univerify issuer (Issue / Revoke) UI.
+//
+// Identity is the connected Polkadot wallet. The contract only accepts
+// issuance and revocation from an Active issuer, and we mirror that here:
+// we read `getIssuer(callerEvmAddress)` on every relevant change and only
+// unlock actions when the live on-chain status is Active.
+
 import { useEffect, useMemo, useState } from "react";
-import { type Address, type Hex } from "viem";
+import { type Address, type Hex, type Abi } from "viem";
 import { univerifyAbi } from "../config/univerify";
-import { evmDevAccounts, getPublicClient, getWalletClient } from "../config/evm";
+import { getPublicClient } from "../config/evm";
 import { deployments } from "../config/deployments";
 import { useChainStore } from "../store/chainStore";
+import {
+	useWalletStore,
+	selectConnectedEvmAddress,
+	selectConnectedSigner,
+} from "../account/wallet";
+import { submitReviveCall } from "../account/reviveCall";
 import {
 	buildCredential,
 	deriveCertificateId,
@@ -17,20 +30,25 @@ const STORAGE_KEY_PREFIX = "univerify:address";
 type TxState =
 	| { kind: "idle" }
 	| { kind: "sending" }
-	| { kind: "waiting"; hash: Hex }
 	| { kind: "success"; hash: Hex; credential: VerifiableCredential }
 	| { kind: "error"; message: string };
 
 type RevokeTxState =
 	| { kind: "idle" }
 	| { kind: "sending" }
-	| { kind: "waiting"; hash: Hex }
 	| { kind: "success"; hash: Hex; certificateId: Hex; internalRef: string }
 	| { kind: "error"; message: string };
 
 // `unknown` covers the loading state and unreachable contracts. Anything other
 // than `active` blocks issuance/revocation in the UI just like the contract.
-type AuthStatus = "unknown" | "active" | "pending" | "suspended" | "not-registered";
+type AuthStatus =
+	| "unknown"
+	| "no-wallet"
+	| "no-contract"
+	| "active"
+	| "pending"
+	| "suspended"
+	| "not-registered";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -47,13 +65,18 @@ function randomBytes32(): Hex {
 
 export default function UniverifyIssuerPage() {
 	const ethRpcUrl = useChainStore((s) => s.ethRpcUrl);
+	const wsUrl = useChainStore((s) => s.wsUrl);
+	const walletStatus = useWalletStore((s) => s.status);
+	const issuerAddress = useWalletStore(selectConnectedEvmAddress);
+	const signer = useWalletStore(selectConnectedSigner);
+	const isWalletConnected = walletStatus.kind === "connected";
+
 	const scopedStorageKey = `${STORAGE_KEY_PREFIX}:${ethRpcUrl}`;
 
 	const defaultAddress = deployments.univerify ?? "";
 	const [contractAddress, setContractAddress] = useState(
 		() => localStorage.getItem(scopedStorageKey) || defaultAddress,
 	);
-	const [selectedAccount, setSelectedAccount] = useState(0);
 
 	// Claims
 	const [claims, setClaims] = useState<CredentialClaims>({
@@ -74,8 +97,15 @@ export default function UniverifyIssuerPage() {
 	const [revokeInternalRef, setRevokeInternalRef] = useState("");
 	const [revokeTx, setRevokeTx] = useState<RevokeTxState>({ kind: "idle" });
 
-	// Issuer authorization status on the current contract
-	const [authStatus, setAuthStatus] = useState<AuthStatus>("unknown");
+	// Two layers: synchronous pre-checks (wallet, contract address) and the
+	// async on-chain issuer lookup. The sync case is derived at render time so
+	// it never triggers cascading renders; the async case lives in state.
+	const [onChainStatus, setOnChainStatus] = useState<AuthStatus>("unknown");
+	const authStatus: AuthStatus = !isWalletConnected || !issuerAddress
+		? "no-wallet"
+		: !contractAddress
+			? "no-contract"
+			: onChainStatus;
 
 	function saveAddress(address: string) {
 		setContractAddress(address);
@@ -83,24 +113,18 @@ export default function UniverifyIssuerPage() {
 		else localStorage.removeItem(scopedStorageKey);
 	}
 
-	// ── Live preview (pure computation on every render) ──────────────
-	const issuerAddress = evmDevAccounts[selectedAccount].account.address as Hex;
-
-	// Re-derive the certificateId that would be revoked, purely from inputs.
-	// This is the whole point of Option 1: the institution only has to remember
-	// the internal reference, and the UI derives the on-chain id.
+	// ── Live preview ─────────────────────────────────────────────────
 	const derivedRevokeCertificateId = useMemo<Hex | null>(() => {
 		const ref = revokeInternalRef.trim();
-		if (!ref) return null;
+		if (!ref || !issuerAddress) return null;
 		return deriveCertificateId(issuerAddress, ref);
 	}, [issuerAddress, revokeInternalRef]);
 
 	// ── Issuer authorization check ───────────────────────────────────
-	// Reads `getIssuer(address).status` so the UI can disambiguate Pending /
-	// Suspended / Not-registered, not just "authorized vs not". The federated
-	// model rejects issuance from anything other than Active.
+	// Purely on-chain: reads `getIssuer(connectedWalletAddress).status`. The
+	// contract is the single source of truth; we just surface its answer.
 	useEffect(() => {
-		if (!contractAddress) {
+		if (!isWalletConnected || !issuerAddress || !contractAddress) {
 			return;
 		}
 		let cancelled = false;
@@ -111,7 +135,7 @@ export default function UniverifyIssuerPage() {
 				const code = await client.getCode({ address: addr });
 				if (cancelled) return;
 				if (!code || code === "0x") {
-					setAuthStatus("unknown");
+					setOnChainStatus("unknown");
 					return;
 				}
 				const issuer = (await client.readContract({
@@ -123,30 +147,31 @@ export default function UniverifyIssuerPage() {
 				if (cancelled) return;
 				switch (Number(issuer.status)) {
 					case 2:
-						setAuthStatus("active");
+						setOnChainStatus("active");
 						break;
 					case 1:
-						setAuthStatus("pending");
+						setOnChainStatus("pending");
 						break;
 					case 3:
-						setAuthStatus("suspended");
+						setOnChainStatus("suspended");
 						break;
 					default:
-						setAuthStatus("not-registered");
+						setOnChainStatus("not-registered");
 				}
 			} catch {
 				if (cancelled) return;
-				setAuthStatus("unknown");
+				setOnChainStatus("unknown");
 			}
 		})();
 		return () => {
 			cancelled = true;
 		};
-	}, [contractAddress, issuerAddress, ethRpcUrl]);
+	}, [isWalletConnected, contractAddress, issuerAddress, ethRpcUrl]);
+
+	const isAuthorized = authStatus === "active";
 
 	const preview = useMemo(() => {
-		// Only compute when all required fields are present to avoid showing
-		// hashes of empty strings.
+		if (!issuerAddress) return null;
 		const ready =
 			claims.degreeTitle.trim() &&
 			claims.holderName.trim() &&
@@ -171,25 +196,23 @@ export default function UniverifyIssuerPage() {
 		});
 	}, [claims, internalRef, holderIdentifier, secret, issuerAddress]);
 
+	const busy = tx.kind === "sending" || revokeTx.kind === "sending";
 	const canSubmit =
-		contractAddress.length > 0 &&
-		preview !== null &&
-		tx.kind !== "sending" &&
-		tx.kind !== "waiting";
+		isAuthorized && contractAddress.length > 0 && preview !== null && !busy;
 
 	async function handleIssue() {
 		if (!preview) return;
-		if (!contractAddress) {
-			setTx({ kind: "error", message: "Enter a contract address first." });
+		if (!isAuthorized || !signer) {
+			setTx({
+				kind: "error",
+				message: "Your connected account is not an Active issuer on this contract.",
+			});
 			return;
 		}
-
 		setTx({ kind: "sending" });
-
 		try {
 			const publicClient = getPublicClient(ethRpcUrl);
 			const addr = contractAddress as Address;
-
 			const code = await publicClient.getCode({ address: addr });
 			if (!code || code === "0x") {
 				setTx({
@@ -199,19 +222,17 @@ export default function UniverifyIssuerPage() {
 				return;
 			}
 
-			const walletClient = await getWalletClient(selectedAccount, ethRpcUrl);
-			const hash = await walletClient.writeContract({
-				address: addr,
-				abi: univerifyAbi,
+			const result = await submitReviveCall({
+				wsUrl,
+				signer,
+				signerEvmAddress: issuerAddress as Address,
+				contractAddress: addr,
+				abi: univerifyAbi as unknown as Abi,
 				functionName: "issueCertificate",
 				args: [preview.certificateId, preview.claimsHash, preview.recipientCommitment],
 			});
 
-			setTx({ kind: "waiting", hash });
-
-			await publicClient.waitForTransactionReceipt({ hash });
-
-			setTx({ kind: "success", hash, credential: preview.credential });
+			setTx({ kind: "success", hash: result.txHash, credential: preview.credential });
 		} catch (e) {
 			console.error("Issue failed:", e);
 			const revert = extractRevertName(e);
@@ -228,8 +249,11 @@ export default function UniverifyIssuerPage() {
 	}
 
 	async function handleRevoke() {
-		if (!contractAddress) {
-			setRevokeTx({ kind: "error", message: "Enter a contract address first." });
+		if (!isAuthorized || !signer || !issuerAddress) {
+			setRevokeTx({
+				kind: "error",
+				message: "Your connected account is not an Active issuer on this contract.",
+			});
 			return;
 		}
 		const ref = revokeInternalRef.trim();
@@ -247,7 +271,6 @@ export default function UniverifyIssuerPage() {
 		try {
 			const publicClient = getPublicClient(ethRpcUrl);
 			const addr = contractAddress as Address;
-
 			const code = await publicClient.getCode({ address: addr });
 			if (!code || code === "0x") {
 				setRevokeTx({
@@ -257,19 +280,22 @@ export default function UniverifyIssuerPage() {
 				return;
 			}
 
-			const walletClient = await getWalletClient(selectedAccount, ethRpcUrl);
-			const hash = await walletClient.writeContract({
-				address: addr,
-				abi: univerifyAbi,
+			const result = await submitReviveCall({
+				wsUrl,
+				signer,
+				signerEvmAddress: issuerAddress as Address,
+				contractAddress: addr,
+				abi: univerifyAbi as unknown as Abi,
 				functionName: "revokeCertificate",
 				args: [certificateId],
 			});
 
-			setRevokeTx({ kind: "waiting", hash });
-
-			await publicClient.waitForTransactionReceipt({ hash });
-
-			setRevokeTx({ kind: "success", hash, certificateId, internalRef: ref });
+			setRevokeTx({
+				kind: "success",
+				hash: result.txHash,
+				certificateId,
+				internalRef: ref,
+			});
 		} catch (e) {
 			console.error("Revoke failed:", e);
 			const revert = extractRevertName(e);
@@ -279,7 +305,7 @@ export default function UniverifyIssuerPage() {
 					: revert === "CertificateNotFound"
 						? `No certificate exists for internal reference "${ref}" issued by ${issuerAddress}. Double-check the spelling and that you are using the same issuer that emitted it.`
 						: revert === "NotCertificateIssuer"
-							? "This certificate was issued by a different account. Switch the dev account to the original issuer."
+							? "This certificate was issued by a different account. Switch wallets to the original issuer."
 							: revert === "CertificateAlreadyRevoked"
 								? "This certificate has already been revoked."
 								: revert === "InvalidCertificateId"
@@ -357,298 +383,377 @@ export default function UniverifyIssuerPage() {
 					)}
 				</div>
 
-				<div>
-					<label className="label">Issuer (Dev Account)</label>
-					<select
-						value={selectedAccount}
-						onChange={(e) => setSelectedAccount(parseInt(e.target.value))}
-						className="input-field w-full"
-					>
-						{evmDevAccounts.map((acc, i) => (
-							<option key={i} value={i}>
-								{acc.name} ({acc.account.address})
-							</option>
-						))}
-					</select>
-					<div className="mt-2 flex items-center gap-2 flex-wrap">
-						<AuthorizationBadge status={authStatus} />
-					</div>
-					<p className="text-xs text-text-muted mt-2">
-						The selected account signs the <code>issueCertificate</code> and{" "}
-						<code>revokeCertificate</code> transactions. It must be an{" "}
-						<strong>Active</strong> issuer on this contract — apply and get approved on
-						the Governance page first.
-					</p>
-				</div>
+				<IssuerPanel
+					status={authStatus}
+					issuerAddress={issuerAddress}
+					isWalletConnected={isWalletConnected}
+				/>
 			</div>
 
-			{/* Claims */}
-			<div className="card space-y-4">
-				<h2 className="section-title">Credential Claims</h2>
-				<p className="text-text-secondary text-sm">
-					These fields are hashed deterministically into <code>claimsHash</code>. Any
-					change — even a single character — produces a different hash and invalidates the
-					credential at verification time.
-				</p>
-				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-					<ClaimInput
-						label="Degree Title"
-						value={claims.degreeTitle}
-						placeholder="Bachelor of Computer Science"
-						onChange={(v) => setClaims((c) => ({ ...c, degreeTitle: v }))}
-					/>
-					<ClaimInput
-						label="Holder Name"
-						value={claims.holderName}
-						placeholder="Ada Lovelace"
-						onChange={(v) => setClaims((c) => ({ ...c, holderName: v }))}
-					/>
-					<ClaimInput
-						label="Institution Name"
-						value={claims.institutionName}
-						placeholder="Universidad de Buenos Aires"
-						onChange={(v) => setClaims((c) => ({ ...c, institutionName: v }))}
-					/>
-					<ClaimInput
-						label="Issuance Date (ISO)"
-						value={claims.issuanceDate}
-						placeholder="2026-03-15"
-						onChange={(v) => setClaims((c) => ({ ...c, issuanceDate: v }))}
-					/>
-				</div>
-			</div>
-
-			{/* Issuance metadata */}
-			<div className="card space-y-4">
-				<h2 className="section-title">Issuance Metadata</h2>
-				<p className="text-text-secondary text-sm">
-					These values make the certificate unique and privacy-preserving but are not part
-					of the claims hash.
-				</p>
-
-				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-					<div>
-						<label className="label">
-							Internal Reference
-							<span className="text-text-muted ml-1">(unique per issuer)</span>
-						</label>
-						<input
-							type="text"
-							value={internalRef}
-							onChange={(e) => setInternalRef(e.target.value)}
-							placeholder="DIPLOMA-0001"
-							className="input-field w-full"
-						/>
-						<p className="text-xs text-text-muted mt-1">
-							Feeds <code>certificateId = keccak256(issuer, internalRef)</code>.
+			{/* Gated content */}
+			{!isAuthorized ? (
+				<BlockedState status={authStatus} />
+			) : (
+				<>
+					{/* Claims */}
+					<div className="card space-y-4">
+						<h2 className="section-title">Credential Claims</h2>
+						<p className="text-text-secondary text-sm">
+							These fields are hashed deterministically into{" "}
+							<code>claimsHash</code>. Any change — even a single character —
+							produces a different hash and invalidates the credential at
+							verification time.
 						</p>
-					</div>
-
-					<div>
-						<label className="label">
-							Holder Identifier
-							<span className="text-text-muted ml-1">(never stored on-chain)</span>
-						</label>
-						<input
-							type="text"
-							value={holderIdentifier}
-							onChange={(e) => setHolderIdentifier(e.target.value)}
-							placeholder="ada@uba.ar"
-							className="input-field w-full"
-						/>
-						<p className="text-xs text-text-muted mt-1">
-							Used only to derive <code>recipientCommitment</code>.
-						</p>
-					</div>
-
-					<div className="md:col-span-2">
-						<label className="label">Secret (bytes32)</label>
-						<div className="flex gap-2">
-							<input
-								type="text"
-								value={secret}
-								onChange={(e) => setSecret(e.target.value as Hex)}
-								className="input-field w-full"
-								spellCheck={false}
+						<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+							<ClaimInput
+								label="Degree Title"
+								value={claims.degreeTitle}
+								placeholder="Bachelor of Computer Science"
+								onChange={(v) => setClaims((c) => ({ ...c, degreeTitle: v }))}
 							/>
-							<button
-								onClick={regenerateSecret}
-								className="btn-secondary text-xs whitespace-nowrap"
-							>
-								Regenerate
-							</button>
+							<ClaimInput
+								label="Holder Name"
+								value={claims.holderName}
+								placeholder="Ada Lovelace"
+								onChange={(v) => setClaims((c) => ({ ...c, holderName: v }))}
+							/>
+							<ClaimInput
+								label="Institution Name"
+								value={claims.institutionName}
+								placeholder="Universidad de Buenos Aires"
+								onChange={(v) => setClaims((c) => ({ ...c, institutionName: v }))}
+							/>
+							<ClaimInput
+								label="Issuance Date (ISO)"
+								value={claims.issuanceDate}
+								placeholder="2026-03-15"
+								onChange={(v) => setClaims((c) => ({ ...c, issuanceDate: v }))}
+							/>
 						</div>
-						<p className="text-xs text-text-muted mt-1">
-							Shared secret between issuer and holder. Anyone who knows it plus the{" "}
-							<code>holderIdentifier</code> can prove ownership of the certificate.
-						</p>
-					</div>
-				</div>
-			</div>
-
-			{/* Live preview */}
-			<div className="card space-y-4">
-				<h2 className="section-title">Computed Values</h2>
-				{preview ? (
-					<div className="space-y-3">
-						<HashField label="Certificate ID" value={preview.certificateId} />
-						<HashField label="Claims Hash" value={preview.claimsHash} />
-						<HashField
-							label="Recipient Commitment"
-							value={preview.recipientCommitment}
-						/>
-					</div>
-				) : (
-					<p className="text-sm text-text-muted">
-						Fill in all claim and issuance fields to see the computed hashes.
-					</p>
-				)}
-
-				<div className="flex flex-wrap items-center gap-3 pt-2">
-					<button onClick={handleIssue} disabled={!canSubmit} className="btn-primary">
-						{tx.kind === "sending"
-							? "Signing..."
-							: tx.kind === "waiting"
-								? "Waiting for receipt..."
-								: "Issue Certificate"}
-					</button>
-					{tx.kind === "error" && (
-						<p className="text-sm font-medium text-accent-red">{tx.message}</p>
-					)}
-					{tx.kind === "waiting" && (
-						<p className="text-sm text-text-tertiary font-mono break-all">
-							tx: {tx.hash}
-						</p>
-					)}
-				</div>
-			</div>
-
-			{/* Success panel */}
-			{tx.kind === "success" && (
-				<div className="card space-y-4 animate-fade-in">
-					<div>
-						<span className="status-badge border bg-accent-green/10 text-accent-green border-accent-green/30">
-							✓ Issued
-						</span>
-						<h2 className="section-title mt-2 text-accent-green">Certificate issued</h2>
-						<p className="text-sm text-text-secondary mt-1">
-							Give the JSON below to the holder. They (or any verifier) can paste it
-							into the Verify tab to check it against the on-chain record.
-						</p>
-						<p className="text-xs text-text-tertiary font-mono break-all mt-2">
-							tx: {tx.hash}
-						</p>
 					</div>
 
-					<div>
-						<div className="flex items-center justify-between mb-2">
-							<label className="label mb-0">Credential JSON</label>
-							<div className="flex gap-2">
-								<button
-									onClick={() => copyCredentialJson(tx.credential)}
-									className="btn-secondary text-xs"
-								>
-									Copy
-								</button>
-								<button
-									onClick={() => downloadCredentialJson(tx.credential)}
-									className="btn-secondary text-xs"
-								>
-									Download .json
-								</button>
+					{/* Issuance metadata */}
+					<div className="card space-y-4">
+						<h2 className="section-title">Issuance Metadata</h2>
+						<p className="text-text-secondary text-sm">
+							These values make the certificate unique and privacy-preserving but are
+							not part of the claims hash.
+						</p>
+
+						<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+							<div>
+								<label className="label">
+									Internal Reference
+									<span className="text-text-muted ml-1">
+										(unique per issuer)
+									</span>
+								</label>
+								<input
+									type="text"
+									value={internalRef}
+									onChange={(e) => setInternalRef(e.target.value)}
+									placeholder="DIPLOMA-0001"
+									className="input-field w-full"
+								/>
+								<p className="text-xs text-text-muted mt-1">
+									Feeds{" "}
+									<code>certificateId = keccak256(issuer, internalRef)</code>.
+								</p>
+							</div>
+
+							<div>
+								<label className="label">
+									Holder Identifier
+									<span className="text-text-muted ml-1">
+										(never stored on-chain)
+									</span>
+								</label>
+								<input
+									type="text"
+									value={holderIdentifier}
+									onChange={(e) => setHolderIdentifier(e.target.value)}
+									placeholder="ada@uba.ar"
+									className="input-field w-full"
+								/>
+								<p className="text-xs text-text-muted mt-1">
+									Used only to derive <code>recipientCommitment</code>.
+								</p>
+							</div>
+
+							<div className="md:col-span-2">
+								<label className="label">Secret (bytes32)</label>
+								<div className="flex gap-2">
+									<input
+										type="text"
+										value={secret}
+										onChange={(e) => setSecret(e.target.value as Hex)}
+										className="input-field w-full"
+										spellCheck={false}
+									/>
+									<button
+										onClick={regenerateSecret}
+										className="btn-secondary text-xs whitespace-nowrap"
+									>
+										Regenerate
+									</button>
+								</div>
+								<p className="text-xs text-text-muted mt-1">
+									Shared secret between issuer and holder. Anyone who knows it
+									plus the <code>holderIdentifier</code> can prove ownership of
+									the certificate.
+								</p>
 							</div>
 						</div>
-						<pre className="rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 text-xs font-mono text-text-secondary whitespace-pre-wrap break-all overflow-x-auto">
-							{JSON.stringify(tx.credential, null, 2)}
-						</pre>
 					</div>
-				</div>
+
+					{/* Live preview */}
+					<div className="card space-y-4">
+						<h2 className="section-title">Computed Values</h2>
+						{preview ? (
+							<div className="space-y-3">
+								<HashField label="Certificate ID" value={preview.certificateId} />
+								<HashField label="Claims Hash" value={preview.claimsHash} />
+								<HashField
+									label="Recipient Commitment"
+									value={preview.recipientCommitment}
+								/>
+							</div>
+						) : (
+							<p className="text-sm text-text-muted">
+								Fill in all claim and issuance fields to see the computed hashes.
+							</p>
+						)}
+
+						<div className="flex flex-wrap items-center gap-3 pt-2">
+							<button
+								onClick={handleIssue}
+								disabled={!canSubmit}
+								className="btn-primary"
+							>
+								{tx.kind === "sending" ? "Signing..." : "Issue Certificate"}
+							</button>
+							{tx.kind === "error" && (
+								<p className="text-sm font-medium text-accent-red">{tx.message}</p>
+							)}
+						</div>
+					</div>
+
+					{/* Success panel */}
+					{tx.kind === "success" && (
+						<div className="card space-y-4 animate-fade-in">
+							<div>
+								<span className="status-badge border bg-accent-green/10 text-accent-green border-accent-green/30">
+									✓ Issued
+								</span>
+								<h2 className="section-title mt-2 text-accent-green">
+									Certificate issued
+								</h2>
+								<p className="text-sm text-text-secondary mt-1">
+									Give the JSON below to the holder. They (or any verifier) can
+									paste it into the Verify tab to check it against the on-chain
+									record.
+								</p>
+								<p className="text-xs text-text-tertiary font-mono break-all mt-2">
+									tx: {tx.hash}
+								</p>
+							</div>
+
+							<div>
+								<div className="flex items-center justify-between mb-2">
+									<label className="label mb-0">Credential JSON</label>
+									<div className="flex gap-2">
+										<button
+											onClick={() => copyCredentialJson(tx.credential)}
+											className="btn-secondary text-xs"
+										>
+											Copy
+										</button>
+										<button
+											onClick={() => downloadCredentialJson(tx.credential)}
+											className="btn-secondary text-xs"
+										>
+											Download .json
+										</button>
+									</div>
+								</div>
+								<pre className="rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 text-xs font-mono text-text-secondary whitespace-pre-wrap break-all overflow-x-auto">
+									{JSON.stringify(tx.credential, null, 2)}
+								</pre>
+							</div>
+						</div>
+					)}
+
+					{/* Revoke card */}
+					<div className="card space-y-4">
+						<h2 className="section-title text-accent-orange">Revoke Certificate</h2>
+						<p className="text-text-secondary text-sm">
+							Enter the <code>Internal Reference</code> you used when issuing (e.g.{" "}
+							<code>DIPLOMA-0001</code>). The <code>certificateId</code> is
+							re-derived from the connected wallet's EVM address, so you do not need
+							to remember the 32-byte id. Only the account that originally issued the
+							certificate can revoke it.
+						</p>
+
+						<div>
+							<label className="label">Internal Reference</label>
+							<input
+								type="text"
+								value={revokeInternalRef}
+								onChange={(e) => {
+									setRevokeInternalRef(e.target.value);
+									if (
+										revokeTx.kind === "success" ||
+										revokeTx.kind === "error"
+									) {
+										setRevokeTx({ kind: "idle" });
+									}
+								}}
+								placeholder="DIPLOMA-0001"
+								className="input-field w-full"
+							/>
+							{derivedRevokeCertificateId && (
+								<p className="text-xs text-text-muted mt-2 break-all">
+									Derived Certificate ID:{" "}
+									<code className="text-text-secondary font-mono">
+										{derivedRevokeCertificateId}
+									</code>
+								</p>
+							)}
+						</div>
+
+						<div className="flex flex-wrap items-center gap-3">
+							<button
+								onClick={handleRevoke}
+								disabled={
+									!isAuthorized ||
+									!revokeInternalRef.trim() ||
+									revokeTx.kind === "sending"
+								}
+								className="btn-accent"
+								style={{
+									background:
+										"linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
+									boxShadow:
+										"0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)",
+								}}
+							>
+								{revokeTx.kind === "sending" ? "Signing..." : "Revoke"}
+							</button>
+							{revokeTx.kind === "error" && (
+								<p className="text-sm font-medium text-accent-red">
+									{revokeTx.message}
+								</p>
+							)}
+						</div>
+
+						{revokeTx.kind === "success" && (
+							<div className="rounded-lg border border-accent-orange/30 bg-accent-orange/10 p-4 space-y-2 animate-fade-in">
+								<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
+									✓ Revoked
+								</span>
+								<p className="text-sm text-text-primary">
+									Certificate <code>{revokeTx.internalRef}</code> has been revoked
+									on-chain. Verifications will now show it as revoked.
+								</p>
+								<p className="text-xs text-text-tertiary font-mono break-all">
+									certificateId: {revokeTx.certificateId}
+								</p>
+								<p className="text-xs text-text-tertiary font-mono break-all">
+									tx: {revokeTx.hash}
+								</p>
+							</div>
+						)}
+					</div>
+				</>
 			)}
+		</div>
+	);
+}
 
-			{/* Revoke card */}
-			<div className="card space-y-4">
-				<h2 className="section-title text-accent-orange">Revoke Certificate</h2>
-				<p className="text-text-secondary text-sm">
-					Enter the <code>Internal Reference</code> you used when issuing (e.g.{" "}
-					<code>DIPLOMA-0001</code>). The <code>certificateId</code> is re-derived from
-					the selected issuer address, so you do not need to remember the 32-byte id. Only
-					the account that originally issued the certificate can revoke it.
-				</p>
+// ── Issuer status readout ───────────────────────────────────────────
 
-				<div>
-					<label className="label">Internal Reference</label>
-					<input
-						type="text"
-						value={revokeInternalRef}
-						onChange={(e) => {
-							setRevokeInternalRef(e.target.value);
-							if (revokeTx.kind === "success" || revokeTx.kind === "error") {
-								setRevokeTx({ kind: "idle" });
-							}
-						}}
-						placeholder="DIPLOMA-0001"
-						className="input-field w-full"
-					/>
-					{derivedRevokeCertificateId && (
-						<p className="text-xs text-text-muted mt-2 break-all">
-							Derived Certificate ID:{" "}
-							<code className="text-text-secondary font-mono">
-								{derivedRevokeCertificateId}
-							</code>
+function IssuerPanel({
+	status,
+	issuerAddress,
+	isWalletConnected,
+}: {
+	status: AuthStatus;
+	issuerAddress: Address | null;
+	isWalletConnected: boolean;
+}) {
+	return (
+		<div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 space-y-2">
+			<div className="flex items-center justify-between gap-3 flex-wrap">
+				<div className="min-w-0">
+					<p className="text-xs text-text-tertiary uppercase tracking-wider">
+						Issuer (connected wallet)
+					</p>
+					{isWalletConnected && issuerAddress ? (
+						<code className="text-xs font-mono text-text-primary break-all">
+							{issuerAddress}
+						</code>
+					) : (
+						<p className="text-sm text-text-muted">
+							Connect a wallet in the header to act as an issuer.
 						</p>
 					)}
 				</div>
-
-				<div className="flex flex-wrap items-center gap-3">
-					<button
-						onClick={handleRevoke}
-						disabled={
-							!contractAddress ||
-							!revokeInternalRef.trim() ||
-							revokeTx.kind === "sending" ||
-							revokeTx.kind === "waiting"
-						}
-						className="btn-accent"
-						style={{
-							background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
-							boxShadow:
-								"0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)",
-						}}
-					>
-						{revokeTx.kind === "sending"
-							? "Signing..."
-							: revokeTx.kind === "waiting"
-								? "Waiting for receipt..."
-								: "Revoke"}
-					</button>
-					{revokeTx.kind === "error" && (
-						<p className="text-sm font-medium text-accent-red">{revokeTx.message}</p>
-					)}
-					{revokeTx.kind === "waiting" && (
-						<p className="text-sm text-text-tertiary font-mono break-all">
-							tx: {revokeTx.hash}
-						</p>
-					)}
-				</div>
-
-				{revokeTx.kind === "success" && (
-					<div className="rounded-lg border border-accent-orange/30 bg-accent-orange/10 p-4 space-y-2 animate-fade-in">
-						<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
-							✓ Revoked
-						</span>
-						<p className="text-sm text-text-primary">
-							Certificate <code>{revokeTx.internalRef}</code> has been revoked
-							on-chain. Verifications will now show it as revoked.
-						</p>
-						<p className="text-xs text-text-tertiary font-mono break-all">
-							certificateId: {revokeTx.certificateId}
-						</p>
-						<p className="text-xs text-text-tertiary font-mono break-all">
-							tx: {revokeTx.hash}
-						</p>
-					</div>
-				)}
+				<AuthorizationBadge status={status} />
 			</div>
+			<p className="text-xs text-text-muted">
+				Issuance authorization is read from the Univerify contract on every change. You
+				must be an <strong>Active</strong> issuer — apply and get approved on the Governance
+				page first.
+			</p>
+		</div>
+	);
+}
+
+function BlockedState({ status }: { status: AuthStatus }) {
+	const msg: Record<AuthStatus, { title: string; body: string; tone: "muted" | "red" | "orange" }> = {
+		"no-wallet": {
+			title: "Wallet not connected",
+			body: "Connect a Polkadot-compatible wallet via the button in the top-right to issue or revoke credentials.",
+			tone: "muted",
+		},
+		"no-contract": {
+			title: "Contract not found",
+			body: "Enter a valid Univerify contract address above. Until then issuance is disabled.",
+			tone: "muted",
+		},
+		unknown: {
+			title: "Checking authorization…",
+			body: "Reading your issuer status from the Univerify contract.",
+			tone: "muted",
+		},
+		"not-registered": {
+			title: "Not authorized to issue",
+			body: "Your wallet is not registered on this Univerify contract. Apply on the Governance page and wait for enough approvals from active universities.",
+			tone: "red",
+		},
+		pending: {
+			title: "Application pending",
+			body: "Your wallet has applied but does not yet have enough approvals to become Active. Ask existing universities to approve you on the Governance page.",
+			tone: "orange",
+		},
+		suspended: {
+			title: "Issuer suspended",
+			body: "Your wallet is a Suspended issuer on this contract. Issuance and revocation will revert until the owner unsuspends you.",
+			tone: "red",
+		},
+		active: { title: "", body: "", tone: "muted" },
+	};
+	const m = msg[status];
+	const classes =
+		m.tone === "red"
+			? "border-accent-red/30 bg-accent-red/5"
+			: m.tone === "orange"
+				? "border-accent-orange/30 bg-accent-orange/5"
+				: "border-white/[0.08] bg-white/[0.02]";
+	return (
+		<div className={`card border ${classes}`}>
+			<h2 className="section-title">{m.title}</h2>
+			<p className="text-sm text-text-secondary mt-1">{m.body}</p>
 		</div>
 	);
 }
@@ -679,11 +784,23 @@ function AuthorizationBadge({ status }: { status: AuthStatus }) {
 					✗ Not registered — apply on the Governance page
 				</span>
 			);
+		case "no-wallet":
+			return (
+				<span className="status-badge border bg-white/[0.04] text-text-muted border-white/[0.08]">
+					Wallet not connected
+				</span>
+			);
+		case "no-contract":
+			return (
+				<span className="status-badge border bg-white/[0.04] text-text-muted border-white/[0.08]">
+					No contract configured
+				</span>
+			);
 		case "unknown":
 		default:
 			return (
 				<span className="status-badge border bg-white/[0.04] text-text-muted border-white/[0.08]">
-					· Issuer status unknown
+					· Checking…
 				</span>
 			);
 	}
