@@ -69,9 +69,8 @@ fn local_testnet_genesis() -> Value {
 
 /// Ethereum dev accounts (Moonbeam idx 0..4) with 0xEE padding to 32 bytes.
 /// Frontend `web/src/config/evm.ts` exposes these as Alice / Bob / Charlie /
-/// Dave / Eve. The first three are the genesis-active Univerify issuers; the
-/// last two exist so the Governance UI can demonstrate the apply / approve
-/// flow without touching the genesis set.
+/// Dave / Eve. Kept around so the EVM/PVM PoE pages can sign with a local
+/// private key without needing a browser wallet.
 fn eth_dev_accounts() -> Vec<AccountId> {
 	use sp_core::crypto::AccountId32;
 	[
@@ -91,10 +90,32 @@ fn eth_dev_accounts() -> Vec<AccountId> {
 	.collect()
 }
 
+/// Real Polkadot SS58 accounts used as Univerify genesis issuers in dev.
+/// They match the `account` fields in `contracts/evm/config/genesis-local.json`
+/// (the H160 there is `keccak256(pubkey)[-20:]` of the entry here, which is
+/// what `pallet-revive`'s `AccountId32Mapper` returns as `msg.sender`).
+/// Endowing them at genesis lets the universities sign `Revive.call`
+/// extrinsics from PWAllet / Polkadot.js without needing a prior transfer.
+fn univerify_issuer_accounts() -> Vec<AccountId> {
+	use sp_core::crypto::AccountId32;
+	[
+		// Universidad de Montevideo — 5EFCYKc2KsTMDHecmpkaGFLaR6HWt1U2FJQTGuMtyqEDoeqj
+		hex_literal::hex!("60797a91d60bcfaa617fa5d899105da355125f33a81e9133fe54cf53cdb74a46"),
+		// UDELAR — 5FLXu2nKiGmP4wHX3qWt8eLE2g7ksFRyCk7vPZvcAg679TfC
+		hex_literal::hex!("90c719d8b3cd106b3d58f03a37f726d2a8f5e2d84b6b4575077950b591616062"),
+		// Universidad ORT — 5H9EGbs2A4CV97vRofjcfaRZTprzy17cR1BAnfM6Bd14sPtv
+		hex_literal::hex!("e0a086e694b2ab4445df8d61c0180bc881d948ad8a494468e0aec0e570b0780d"),
+	]
+	.into_iter()
+	.map(AccountId32::from)
+	.collect()
+}
+
 fn development_config_genesis() -> Value {
 	let mut endowed: Vec<AccountId> =
 		Sr25519Keyring::well_known().map(|k| k.to_account_id()).collect();
 	endowed.extend(eth_dev_accounts());
+	endowed.extend(univerify_issuer_accounts());
 
 	testnet_genesis(
 		vec![
