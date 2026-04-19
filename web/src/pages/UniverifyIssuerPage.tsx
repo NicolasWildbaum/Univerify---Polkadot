@@ -6,7 +6,7 @@
 // unlock actions when the live on-chain status is Active.
 
 import { useEffect, useMemo, useState } from "react";
-import { type Address, type Hex, type Abi } from "viem";
+import { type Address, type Hex, type Abi, isAddress } from "viem";
 import { univerifyAbi } from "../config/univerify";
 import { getPublicClient } from "../config/evm";
 import { deployments } from "../config/deployments";
@@ -15,7 +15,9 @@ import {
 	useWalletStore,
 	selectConnectedEvmAddress,
 	selectConnectedSigner,
+	ss58ToEvmAddress,
 } from "../account/wallet";
+import { getSs58AddressInfo } from "@polkadot-api/substrate-bindings";
 import { submitReviveCall } from "../account/reviveCall";
 import {
 	buildCredential,
@@ -30,7 +32,12 @@ const STORAGE_KEY_PREFIX = "univerify:address";
 type TxState =
 	| { kind: "idle" }
 	| { kind: "sending" }
-	| { kind: "success"; hash: Hex; credential: VerifiableCredential }
+	| {
+			kind: "success";
+			hash: Hex;
+			credential: VerifiableCredential;
+			studentAddress: Address;
+	  }
 	| { kind: "error"; message: string };
 
 type RevokeTxState =
@@ -59,6 +66,28 @@ function randomBytes32(): Hex {
 		.map((b) => b.toString(16).padStart(2, "0"))
 		.join("");
 	return `0x${hex}` as Hex;
+}
+
+/// Friendlier message when an error reaches us as the opaque
+/// `Revive.ContractReverted` dispatch error — typically because the on-chain
+/// contract is older than the one this UI was built against (e.g. it lacks
+/// the new `setCertificateNft` wiring), or because the eth-rpc proxy is
+/// unreachable and the pre-flight `simulateContract` couldn't decode the
+/// revert payload before submission.
+function contractRevertedFallback(e: unknown): string {
+	const raw = e instanceof Error ? e.message : String(e);
+	if (raw.includes("Revive.ContractReverted") || raw.includes("ContractReverted")) {
+		return (
+			"The contract reverted, but the dispatch error didn't carry a reason. " +
+			"Most common causes:\n" +
+			"  • The deployed Univerify contract is the old version (no NFT wiring). " +
+			"Re-run `cd contracts/evm && npx hardhat run scripts/deploy-univerify.ts --network <net>` and refresh.\n" +
+			"  • A certificate with this Internal Reference already exists for your issuer.\n" +
+			"  • The CertificateNft contract isn't wired (`setCertificateNft` was never called).\n\n" +
+			`Raw error: ${raw}`
+		);
+	}
+	return `Transaction failed: ${raw}`;
 }
 
 // ── Component ───────────────────────────────────────────────────────
@@ -90,6 +119,9 @@ export default function UniverifyIssuerPage() {
 	const [internalRef, setInternalRef] = useState("");
 	const [holderIdentifier, setHolderIdentifier] = useState("");
 	const [secret, setSecret] = useState<Hex>(randomBytes32());
+	// Student wallet that receives the soulbound NFT. The contract requires
+	// a non-zero address; we validate the EIP-55 / hex shape with viem.
+	const [studentAddress, setStudentAddress] = useState("");
 
 	const [tx, setTx] = useState<TxState>({ kind: "idle" });
 
@@ -170,6 +202,27 @@ export default function UniverifyIssuerPage() {
 
 	const isAuthorized = authStatus === "active";
 
+	const trimmedStudent = studentAddress.trim();
+	// The contract takes an H160 (EVM, 20 bytes), but issuers commonly only
+	// know the student's SS58 address (the one Polkadot.js / Talisman /
+	// SubWallet show by default). We accept either:
+	//   - 0x-prefixed 40-char hex → used as-is (any casing, no checksum check)
+	//   - SS58 → converted via the same `pallet_revive::AccountId32Mapper`
+	//     logic the rest of the app uses (`ss58ToEvmAddress`), so the H160
+	//     we mint to matches what the student will see when they connect.
+	const resolvedStudent: Address | null = (() => {
+		if (!trimmedStudent) return null;
+		if (trimmedStudent.startsWith("0x")) {
+			return isAddress(trimmedStudent, { strict: false }) ? trimmedStudent : null;
+		}
+		const info = getSs58AddressInfo(trimmedStudent);
+		if (!info.isValid) return null;
+		return ss58ToEvmAddress(trimmedStudent);
+	})();
+	const studentAddressValid = resolvedStudent !== null;
+	const studentInputLooksLikeSs58 =
+		trimmedStudent.length > 0 && !trimmedStudent.startsWith("0x");
+
 	const preview = useMemo(() => {
 		if (!issuerAddress) return null;
 		const ready =
@@ -198,7 +251,11 @@ export default function UniverifyIssuerPage() {
 
 	const busy = tx.kind === "sending" || revokeTx.kind === "sending";
 	const canSubmit =
-		isAuthorized && contractAddress.length > 0 && preview !== null && !busy;
+		isAuthorized &&
+		contractAddress.length > 0 &&
+		preview !== null &&
+		studentAddressValid &&
+		!busy;
 
 	async function handleIssue() {
 		if (!preview) return;
@@ -209,6 +266,15 @@ export default function UniverifyIssuerPage() {
 			});
 			return;
 		}
+		if (!studentAddressValid || !resolvedStudent) {
+			setTx({
+				kind: "error",
+				message:
+					"Enter a valid student wallet address. Either an EVM/H160 (0x… 20 bytes) or a Polkadot SS58 address (e.g. 5F…).",
+			});
+			return;
+		}
+		const student = resolvedStudent;
 		setTx({ kind: "sending" });
 		try {
 			const publicClient = getPublicClient(ethRpcUrl);
@@ -222,6 +288,34 @@ export default function UniverifyIssuerPage() {
 				return;
 			}
 
+			// Pre-flight `eth_call`. pallet-revive's `Revive.ContractReverted`
+			// dispatch error doesn't carry the contract's revert payload, so
+			// without this simulation the user only ever sees the opaque
+			// dispatch error. viem decodes the revert against the ABI here
+			// and the catch branch surfaces the actual custom-error name.
+			try {
+				await publicClient.simulateContract({
+					account: issuerAddress as Address,
+					address: addr,
+					abi: univerifyAbi as unknown as Abi,
+					functionName: "issueCertificate",
+					args: [
+						preview.certificateId,
+						preview.claimsHash,
+						preview.recipientCommitment,
+						student,
+					],
+				});
+			} catch (simErr) {
+				console.warn("[Univerify] issueCertificate pre-flight reverted", {
+					issuerAddress,
+					student,
+					certificateId: preview.certificateId,
+					error: simErr,
+				});
+				throw simErr;
+			}
+
 			const result = await submitReviveCall({
 				wsUrl,
 				signer,
@@ -229,10 +323,20 @@ export default function UniverifyIssuerPage() {
 				contractAddress: addr,
 				abi: univerifyAbi as unknown as Abi,
 				functionName: "issueCertificate",
-				args: [preview.certificateId, preview.claimsHash, preview.recipientCommitment],
+				args: [
+					preview.certificateId,
+					preview.claimsHash,
+					preview.recipientCommitment,
+					student,
+				],
 			});
 
-			setTx({ kind: "success", hash: result.txHash, credential: preview.credential });
+			setTx({
+				kind: "success",
+				hash: result.txHash,
+				credential: preview.credential,
+				studentAddress: student,
+			});
 		} catch (e) {
 			console.error("Issue failed:", e);
 			const revert = extractRevertName(e);
@@ -241,9 +345,15 @@ export default function UniverifyIssuerPage() {
 					? `This account (${issuerAddress}) is not an Active issuer on this Univerify contract. Apply via the Governance page and wait for enough approvals before issuing.`
 					: revert === "CertificateAlreadyExists"
 						? "A certificate with this ID already exists. Change the Internal Reference to issue a new one."
-						: revert
-							? `Contract reverted: ${revert}.`
-							: `Transaction failed: ${e instanceof Error ? e.message : String(e)}`;
+						: revert === "InvalidStudentAddress"
+							? "The student wallet address is invalid (zero address)."
+							: revert === "NftNotConfigured"
+								? "This Univerify contract has no CertificateNft wired up. Re-run the deploy script so the NFT contract is set."
+								: revert === "AlreadyMinted"
+									? "An NFT for this certificate id has already been minted."
+									: revert
+										? `Contract reverted: ${revert}.`
+										: contractRevertedFallback(e);
 			setTx({ kind: "error", message });
 		}
 	}
@@ -280,6 +390,16 @@ export default function UniverifyIssuerPage() {
 				return;
 			}
 
+			// Pre-flight `eth_call` so the catch branch can decode the
+			// custom-error name (see the issuance handler for the full why).
+			await publicClient.simulateContract({
+				account: issuerAddress as Address,
+				address: addr,
+				abi: univerifyAbi as unknown as Abi,
+				functionName: "revokeCertificate",
+				args: [certificateId],
+			});
+
 			const result = await submitReviveCall({
 				wsUrl,
 				signer,
@@ -312,7 +432,7 @@ export default function UniverifyIssuerPage() {
 									? "Invalid certificate id (zero)."
 									: revert
 										? `Contract reverted: ${revert}.`
-										: `Transaction failed: ${e instanceof Error ? e.message : String(e)}`;
+										: contractRevertedFallback(e);
 			setRevokeTx({ kind: "error", message });
 		}
 	}
@@ -481,6 +601,46 @@ export default function UniverifyIssuerPage() {
 							</div>
 
 							<div className="md:col-span-2">
+								<label className="label">
+									Student Wallet Address
+									<span className="text-text-muted ml-1">
+										(receives the soulbound NFT)
+									</span>
+								</label>
+								<input
+									type="text"
+									value={studentAddress}
+									onChange={(e) => setStudentAddress(e.target.value)}
+									placeholder="0x… (EVM) or 5F… (Polkadot SS58)"
+									className="input-field w-full"
+									spellCheck={false}
+								/>
+								<p className="text-xs text-text-muted mt-1">
+									Accepts an EVM/H160 address or a Polkadot SS58 address — we
+									convert SS58 to its mapped H160 the same way{" "}
+									<code>pallet-revive</code> does. Issued in the same
+									transaction; soulbound, so the student wallet keeps the NFT
+									and cannot transfer it.
+								</p>
+								{trimmedStudent && !studentAddressValid ? (
+									<p className="text-xs text-accent-red mt-1">
+										Not a valid address. Use either a 0x-prefixed 20-byte hex
+										string (40 hex chars) or a Polkadot SS58 address.
+									</p>
+								) : null}
+								{studentAddressValid &&
+								studentInputLooksLikeSs58 &&
+								resolvedStudent ? (
+									<p className="text-xs text-text-muted mt-1">
+										Will mint to H160:{" "}
+										<code className="font-mono text-text-primary break-all">
+											{resolvedStudent}
+										</code>
+									</p>
+								) : null}
+							</div>
+
+							<div className="md:col-span-2">
 								<label className="label">Secret (bytes32)</label>
 								<div className="flex gap-2">
 									<input
@@ -549,14 +709,18 @@ export default function UniverifyIssuerPage() {
 									Certificate issued
 								</h2>
 								<p className="text-sm text-text-secondary mt-1">
-									Give the JSON below to the holder. They (or any verifier) can
-									paste it into the Verify tab to check it against the on-chain
-									record.
+									The soulbound NFT has been minted to{" "}
+									<code className="font-mono text-xs">{tx.studentAddress}</code>
+									. Give the JSON below to the holder, or share the public
+									verification link so anyone can check the certificate
+									on-chain.
 								</p>
 								<p className="text-xs text-text-tertiary font-mono break-all mt-2">
 									tx: {tx.hash}
 								</p>
 							</div>
+
+							<VerifyLinkRow certificateId={tx.credential.certificateId} />
 
 							<div>
 								<div className="flex items-center justify-between mb-2">
@@ -829,6 +993,35 @@ function ClaimInput({
 				placeholder={placeholder}
 				className="input-field w-full"
 			/>
+		</div>
+	);
+}
+
+function VerifyLinkRow({ certificateId }: { certificateId: Hex }) {
+	const url = `${window.location.origin}/#/verify/cert/${certificateId}`;
+	return (
+		<div>
+			<label className="label mb-2">Public verification link</label>
+			<div className="flex flex-wrap items-center gap-2">
+				<a
+					href={`#/verify/cert/${certificateId}`}
+					target="_blank"
+					rel="noreferrer"
+					className="text-xs font-mono break-all text-accent-blue hover:underline"
+				>
+					{url}
+				</a>
+				<button
+					onClick={() => navigator.clipboard?.writeText(url).catch(() => {})}
+					className="btn-secondary text-xs"
+				>
+					Copy link
+				</button>
+			</div>
+			<p className="text-xs text-text-muted mt-2">
+				Anyone with the link can verify the certificate's existence, issuer, and
+				revocation status on-chain — no wallet required.
+			</p>
 		</div>
 	);
 }
