@@ -1,5 +1,23 @@
+// Public verifier — two flows in one page:
+//
+//   "link"      : paste a verification link or a 0x… certificate id and
+//                 jump to PublicVerifyPage which checks existence, issuer
+//                 authenticity, and revocation status via the soulbound NFT.
+//
+//   "integrity" : prove that a presented (holderName, degreeTitle,
+//                 institutionName, month/year) tuple matches the on-chain
+//                 `claimsHash` for a given certificate id. Both sides hash
+//                 with the canonical Schema v2 normalization (uppercase +
+//                 trim + collapse whitespace + NFC + YYYY-MM), so verifiers
+//                 don't have to mirror the issuer's casing exactly.
+//
+// We deliberately do NOT accept a pasted credential JSON or a free-form
+// 0x-prefixed bytes32 claims hash anymore: the only way to prove integrity
+// is by reproducing the canonical claims, which makes the meaning of a
+// "match" unambiguous to a non-technical verifier.
+
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { type Address, type Hex } from "viem";
 import { univerifyAbi } from "../config/univerify";
 import { getPublicClient } from "../config/evm";
@@ -7,13 +25,12 @@ import { deployments } from "../config/deployments";
 import { useChainStore } from "../store/chainStore";
 import {
 	computeClaimsHash,
-	parseVerifiableCredential,
+	normalizeClaims,
 	type CredentialClaims,
 } from "../utils/credential";
+import { MonthYearPicker } from "../components/MonthYearPicker";
 
-type Mode = "link" | "json" | "form";
-
-const CERT_ID_RE = /^0x[0-9a-fA-F]{64}$/;
+type Mode = "link" | "integrity";
 
 /// Pull a certificateId out of any of:
 ///   - bare hex id: `0xabc…`
@@ -48,96 +65,85 @@ function deriveVerdict(r: VerificationResult): Verdict {
 	return "valid";
 }
 
-const STORAGE_KEY_PREFIX = "univerify:address";
-
-const EXAMPLE_JSON = `{
-  "certificateId": "0x...",
-  "issuer": "0x...",
-  "recipientCommitment": "0x...",
-  "claims": {
-    "degreeTitle": "Bachelor of Computer Science",
-    "holderName": "Ada Lovelace",
-    "institutionName": "Universidad de Buenos Aires",
-    "issuanceDate": "2026-03-15"
-  }
-}`;
-
 export default function VerificationPage() {
 	const navigate = useNavigate();
+	const [searchParams] = useSearchParams();
 	const ethRpcUrl = useChainStore((s) => s.ethRpcUrl);
-	const scopedStorageKey = `${STORAGE_KEY_PREFIX}:${ethRpcUrl}`;
 
-	const [mode, setMode] = useState<Mode>("link");
+	const univerifyAddress = deployments.univerify as Address | null;
 
-	// ── Link / ID mode state ─────────────────────────────────────────
-	// We keep this mode UI-only (no on-chain reads here): once we extract
-	// a valid id, navigate to the public verifier route, which already
-	// does all the on-chain reads and renders the verdict. This keeps
-	// "verify by id" logic in exactly one place.
-	const [linkInput, setLinkInput] = useState("");
+	// Initial mode + cert id come from the query string when the user lands
+	// here from the "Validate claim integrity" CTA on the public verifier.
+	const initialCert = searchParams.get("cert") ?? "";
+	const initialMode: Mode = searchParams.get("mode") === "integrity" ? "integrity" : "link";
+
+	const [mode, setMode] = useState<Mode>(initialMode);
+
+	// ── Link / ID mode ───────────────────────────────────────────────
+	const [linkInput, setLinkInput] = useState(initialMode === "link" ? initialCert : "");
 	const linkCertId = useMemo(() => extractCertificateId(linkInput), [linkInput]);
 	const linkInputHasContent = linkInput.trim().length > 0;
 
-	// Contract address (defaults to deployments.univerify, per-rpc-url override via localStorage).
-	const defaultAddress = deployments.univerify ?? "";
-	const [contractAddress, setContractAddress] = useState("");
-
-	useEffect(() => {
-		setContractAddress(localStorage.getItem(scopedStorageKey) || defaultAddress);
-	}, [defaultAddress, scopedStorageKey]);
-
-	function saveAddress(address: string) {
-		setContractAddress(address);
-		if (address) {
-			localStorage.setItem(scopedStorageKey, address);
-		} else {
-			localStorage.removeItem(scopedStorageKey);
-		}
-	}
-
-	// ── JSON mode state ──────────────────────────────────────────────
-	const [jsonText, setJsonText] = useState("");
-
-	// ── Form mode state ──────────────────────────────────────────────
+	// ── Integrity mode ───────────────────────────────────────────────
+	const [integrityCert, setIntegrityCert] = useState(
+		initialMode === "integrity" ? initialCert : "",
+	);
+	const integrityCertId = useMemo(
+		() => extractCertificateId(integrityCert),
+		[integrityCert],
+	);
 	const [formClaims, setFormClaims] = useState<CredentialClaims>({
 		degreeTitle: "",
 		holderName: "",
 		institutionName: "",
 		issuanceDate: "",
 	});
-	const [formCertificateId, setFormCertificateId] = useState("");
 
 	// ── Verification result ──────────────────────────────────────────
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [result, setResult] = useState<VerificationResult | null>(null);
 
-	// Clear stale result/error when the user changes inputs.
 	const resetOutputs = () => {
 		setResult(null);
 		setError(null);
 	};
 
+	// If the URL query params change (e.g. user clicks the CTA from another
+	// tab), pull them back into local state so the form prefills correctly.
+	useEffect(() => {
+		const next = searchParams.get("cert") ?? "";
+		const m: Mode = searchParams.get("mode") === "integrity" ? "integrity" : "link";
+		setMode(m);
+		if (m === "integrity") setIntegrityCert(next);
+		else setLinkInput(next);
+		resetOutputs();
+	}, [searchParams]);
+
+	// Live preview of what `computeClaimsHash` will actually hash. We try/catch
+	// because `normalizeClaims` throws on a partially-typed `issuanceDate`.
+	const canonicalClaims = useMemo<CredentialClaims | null>(() => {
+		const ready =
+			formClaims.degreeTitle.trim() &&
+			formClaims.holderName.trim() &&
+			formClaims.institutionName.trim() &&
+			formClaims.issuanceDate.trim();
+		if (!ready) return null;
+		try {
+			return normalizeClaims(formClaims);
+		} catch {
+			return null;
+		}
+	}, [formClaims]);
+
 	const canVerify = useMemo(() => {
-		// `link` mode delegates to PublicVerifyPage and doesn't need a
-		// contract address typed in here (the public page reads from
-		// `deployments.univerify` directly).
 		if (mode === "link") return linkCertId !== null;
-		if (!contractAddress) return false;
-		if (mode === "json") return jsonText.trim().length > 0;
-		return (
-			formCertificateId.trim().length > 0 &&
-			formClaims.degreeTitle.trim().length > 0 &&
-			formClaims.holderName.trim().length > 0 &&
-			formClaims.institutionName.trim().length > 0 &&
-			formClaims.issuanceDate.trim().length > 0
-		);
-	}, [contractAddress, mode, jsonText, formCertificateId, formClaims, linkCertId]);
+		return integrityCertId !== null && canonicalClaims !== null;
+	}, [mode, linkCertId, integrityCertId, canonicalClaims]);
 
 	async function handleVerify() {
 		resetOutputs();
 
-		// Link mode: just navigate. The public page handles everything.
 		if (mode === "link") {
 			if (!linkCertId) {
 				setError("Paste a verification link or a 0x-prefixed certificate id.");
@@ -147,65 +153,48 @@ export default function VerificationPage() {
 			return;
 		}
 
-		if (!contractAddress) {
-			setError("Enter a contract address first.");
+		if (!univerifyAddress) {
+			setError(
+				"Univerify contract address is not configured in this build. Deploy the contract or set `deployments.univerify`.",
+			);
+			return;
+		}
+		if (!integrityCertId) {
+			setError("Paste a verification link or a 0x-prefixed certificate id.");
+			return;
+		}
+		if (!canonicalClaims) {
+			setError(
+				"Fill all four claim fields. Issuance month must be a valid month (use the picker).",
+			);
 			return;
 		}
 
-		let certificateId: Hex;
-		let claims: CredentialClaims;
-
-		if (mode === "json") {
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(jsonText);
-			} catch (e) {
-				setError(
-					`Invalid JSON: ${e instanceof Error ? e.message : "could not parse input"}.`,
-				);
-				return;
-			}
-			const check = parseVerifiableCredential(parsed);
-			if (!check.ok) {
-				setError(check.error);
-				return;
-			}
-			certificateId = check.credential.certificateId;
-			claims = check.credential.claims;
-		} else {
-			if (!/^0x[0-9a-fA-F]{64}$/.test(formCertificateId.trim())) {
-				setError("`certificateId` must be a 0x-prefixed bytes32 (64 hex chars).");
-				return;
-			}
-			certificateId = formCertificateId.trim() as Hex;
-			claims = {
-				degreeTitle: formClaims.degreeTitle.trim(),
-				holderName: formClaims.holderName.trim(),
-				institutionName: formClaims.institutionName.trim(),
-				issuanceDate: formClaims.issuanceDate.trim(),
-			};
+		let claimsHash: Hex;
+		try {
+			claimsHash = computeClaimsHash(formClaims);
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+			return;
 		}
-
-		const claimsHash = computeClaimsHash(claims);
 
 		try {
 			setLoading(true);
 			const client = getPublicClient(ethRpcUrl);
-			const addr = contractAddress as Address;
 
-			const code = await client.getCode({ address: addr });
+			const code = await client.getCode({ address: univerifyAddress });
 			if (!code || code === "0x") {
 				setError(
-					`No Univerify contract found at this address on ${ethRpcUrl}. Update the address or deploy one first.`,
+					`No Univerify contract found at ${univerifyAddress} on ${ethRpcUrl}. The deployment in this build may be stale.`,
 				);
 				return;
 			}
 
 			const [exists, issuer, hashMatch, revoked, issuedAt] = await client.readContract({
-				address: addr,
+				address: univerifyAddress,
 				abi: univerifyAbi,
 				functionName: "verifyCertificate",
-				args: [certificateId, claimsHash],
+				args: [integrityCertId, claimsHash],
 			});
 
 			setResult({
@@ -214,7 +203,7 @@ export default function VerificationPage() {
 				hashMatch,
 				revoked,
 				issuedAt,
-				certificateId,
+				certificateId: integrityCertId,
 				claimsHash,
 			});
 		} catch (e) {
@@ -225,8 +214,8 @@ export default function VerificationPage() {
 		}
 	}
 
-	function pasteExample() {
-		setJsonText(EXAMPLE_JSON);
+	function switchMode(next: Mode) {
+		setMode(next);
 		resetOutputs();
 	}
 
@@ -235,58 +224,19 @@ export default function VerificationPage() {
 			<div className="space-y-2">
 				<h1 className="page-title text-accent-blue">Verify Credential</h1>
 				<p className="text-text-secondary">
-					Public verification of a Univerify academic credential. Pick a mode below:
-					paste the public link (or just the certificate id), paste the full credential
-					JSON, or fill the fields manually. The link mode confirms existence and status;
-					the JSON / form modes additionally check that the claims haven't been tampered
-					with.
+					Two paths, both public, both on-chain. Use <strong>Link / ID</strong> to
+					confirm that a certificate exists, who issued it, who holds it, and whether
+					it has been revoked. Use <strong>Validate Information Integrity</strong> to
+					additionally prove that a specific (holder, degree, institution, month) tuple
+					matches the on-chain hash for that certificate.
 				</p>
 			</div>
 
-			{/* Contract address */}
 			<div className="card space-y-4">
-				{mode !== "link" && (
-					<div>
-						<label className="label">Univerify Contract Address</label>
-						<div className="flex gap-2">
-							<input
-								type="text"
-								value={contractAddress}
-								onChange={(e) => {
-									saveAddress(e.target.value);
-									resetOutputs();
-								}}
-								placeholder="0x..."
-								className="input-field w-full"
-							/>
-							{defaultAddress && contractAddress !== defaultAddress && (
-								<button
-									onClick={() => {
-										saveAddress(defaultAddress);
-										resetOutputs();
-									}}
-									className="btn-secondary text-xs whitespace-nowrap"
-								>
-									Reset
-								</button>
-							)}
-						</div>
-						{!defaultAddress && (
-							<p className="text-xs text-text-muted mt-2">
-								<code>deployments.univerify</code> is not set. Deploy the
-								Univerify contract or paste the address manually.
-							</p>
-						)}
-					</div>
-				)}
-
 				{/* Mode tabs */}
 				<div className="flex gap-2 flex-wrap">
 					<button
-						onClick={() => {
-							setMode("link");
-							resetOutputs();
-						}}
+						onClick={() => switchMode("link")}
 						className={`btn-secondary text-xs ${
 							mode === "link" ? "!bg-white/[0.08] !text-text-primary" : ""
 						}`}
@@ -294,26 +244,12 @@ export default function VerificationPage() {
 						Link / ID
 					</button>
 					<button
-						onClick={() => {
-							setMode("json");
-							resetOutputs();
-						}}
+						onClick={() => switchMode("integrity")}
 						className={`btn-secondary text-xs ${
-							mode === "json" ? "!bg-white/[0.08] !text-text-primary" : ""
+							mode === "integrity" ? "!bg-white/[0.08] !text-text-primary" : ""
 						}`}
 					>
-						Paste JSON
-					</button>
-					<button
-						onClick={() => {
-							setMode("form");
-							resetOutputs();
-						}}
-						className={`btn-secondary text-xs ${
-							mode === "form" ? "!bg-white/[0.08] !text-text-primary" : ""
-						}`}
-					>
-						Manual fields
+						Validate Information Integrity
 					</button>
 				</div>
 
@@ -357,119 +293,160 @@ export default function VerificationPage() {
 							) : null}
 						</p>
 					</div>
-				) : mode === "json" ? (
-					<div>
-						<div className="flex items-center justify-between">
-							<label className="label">Credential JSON</label>
-							<button
-								onClick={pasteExample}
-								className="text-xs text-text-tertiary hover:text-text-secondary underline-offset-2 hover:underline"
-							>
-								Insert example
-							</button>
-						</div>
-						<textarea
-							value={jsonText}
-							onChange={(e) => {
-								setJsonText(e.target.value);
-								resetOutputs();
-							}}
-							placeholder={EXAMPLE_JSON}
-							rows={12}
-							className="input-field w-full resize-y"
-							spellCheck={false}
-						/>
-					</div>
 				) : (
-					<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-						<div className="md:col-span-2">
-							<label className="label">Certificate ID (bytes32)</label>
+					<div className="space-y-4">
+						<div>
+							<label className="label">Verification link or certificate ID</label>
 							<input
 								type="text"
-								value={formCertificateId}
+								value={integrityCert}
 								onChange={(e) => {
-									setFormCertificateId(e.target.value);
+									setIntegrityCert(e.target.value);
 									resetOutputs();
 								}}
-								placeholder="0x..."
+								placeholder="https://…/#/verify/cert/0x…  or  0x…"
 								className="input-field w-full"
+								spellCheck={false}
 							/>
+							<p className="text-xs text-text-muted mt-1">
+								We pull the <code>certificateId</code> out of the link so you
+								never have to retype the 64-character hash.
+								{integrityCert.trim().length > 0 && !integrityCertId ? (
+									<span className="block text-accent-red mt-1">
+										Couldn't find a 0x-prefixed 32-byte certificate id in
+										the input.
+									</span>
+								) : null}
+								{integrityCertId ? (
+									<span className="block text-accent-green mt-1">
+										Found id:{" "}
+										<code className="font-mono text-text-primary break-all">
+											{integrityCertId}
+										</code>
+									</span>
+								) : null}
+							</p>
 						</div>
-						<div>
-							<label className="label">Degree Title</label>
-							<input
-								type="text"
-								value={formClaims.degreeTitle}
-								onChange={(e) => {
-									setFormClaims((c) => ({ ...c, degreeTitle: e.target.value }));
-									resetOutputs();
-								}}
-								placeholder="Bachelor of Computer Science"
-								className="input-field w-full"
-							/>
-						</div>
-						<div>
-							<label className="label">Holder Name</label>
-							<input
-								type="text"
-								value={formClaims.holderName}
-								onChange={(e) => {
-									setFormClaims((c) => ({ ...c, holderName: e.target.value }));
-									resetOutputs();
-								}}
-								placeholder="Ada Lovelace"
-								className="input-field w-full"
-							/>
-						</div>
-						<div>
-							<label className="label">Institution Name</label>
-							<input
-								type="text"
-								value={formClaims.institutionName}
-								onChange={(e) => {
-									setFormClaims((c) => ({
-										...c,
-										institutionName: e.target.value,
-									}));
-									resetOutputs();
-								}}
-								placeholder="Universidad de Buenos Aires"
-								className="input-field w-full"
-							/>
-						</div>
-						<div>
-							<label className="label">Issuance Date (ISO)</label>
-							<input
-								type="text"
+
+						<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+							<div>
+								<label className="label">Holder Name</label>
+								<input
+									type="text"
+									value={formClaims.holderName}
+									onChange={(e) => {
+										setFormClaims((c) => ({
+											...c,
+											holderName: e.target.value,
+										}));
+										resetOutputs();
+									}}
+									placeholder="Ada Lovelace"
+									className="input-field w-full"
+								/>
+							</div>
+							<div>
+								<label className="label">Degree Title</label>
+								<input
+									type="text"
+									value={formClaims.degreeTitle}
+									onChange={(e) => {
+										setFormClaims((c) => ({
+											...c,
+											degreeTitle: e.target.value,
+										}));
+										resetOutputs();
+									}}
+									placeholder="Bachelor of Computer Science"
+									className="input-field w-full"
+								/>
+							</div>
+							<div>
+								<label className="label">Institution Name</label>
+								<input
+									type="text"
+									value={formClaims.institutionName}
+									onChange={(e) => {
+										setFormClaims((c) => ({
+											...c,
+											institutionName: e.target.value,
+										}));
+										resetOutputs();
+									}}
+									placeholder="Universidad de Buenos Aires"
+									className="input-field w-full"
+								/>
+							</div>
+							<MonthYearPicker
+								label="Issuance Month"
 								value={formClaims.issuanceDate}
-								onChange={(e) => {
-									setFormClaims((c) => ({ ...c, issuanceDate: e.target.value }));
+								onChange={(v) => {
+									setFormClaims((c) => ({ ...c, issuanceDate: v }));
 									resetOutputs();
 								}}
-								placeholder="2026-03-15"
-								className="input-field w-full"
+								helpText="Hashed as YYYY-MM. Day is intentionally not part of the hash."
 							/>
 						</div>
+
+						{canonicalClaims && <CanonicalClaimsPanel claims={canonicalClaims} />}
+
+						<p className="text-xs text-text-muted">
+							Spelling matters; casing and whitespace don't. Strings are
+							upper-cased, NFC-normalized and whitespace-collapsed before hashing,
+							so "ada lovelace" and "ADA  LOVELACE" produce the same hash.
+						</p>
 					</div>
 				)}
 
 				<div className="flex items-center gap-3">
 					<button
 						onClick={handleVerify}
-						disabled={!canVerify || loading}
+						disabled={!canVerify || loading || (mode === "integrity" && !univerifyAddress)}
 						className="btn-primary"
 					>
 						{loading
 							? "Verifying..."
 							: mode === "link"
 								? "Open public verifier"
-								: "Verify"}
+								: "Validate integrity"}
 					</button>
 					{error && <p className="text-sm font-medium text-accent-red">{error}</p>}
 				</div>
+
+				{mode === "integrity" && !univerifyAddress && (
+					<p className="text-xs text-accent-red">
+						<code>deployments.univerify</code> is not set in this build. Integrity
+						verification is unavailable until the contract is deployed.
+					</p>
+				)}
 			</div>
 
 			{result && <ResultCard result={result} />}
+		</div>
+	);
+}
+
+function CanonicalClaimsPanel({ claims }: { claims: CredentialClaims }) {
+	return (
+		<div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 space-y-2">
+			<p className="text-xs font-medium text-text-tertiary uppercase tracking-wider">
+				Canonical form (used for hashing)
+			</p>
+			<dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs font-mono text-text-primary">
+				<CanonicalRow label="degreeTitle" value={claims.degreeTitle} />
+				<CanonicalRow label="holderName" value={claims.holderName} />
+				<CanonicalRow label="institutionName" value={claims.institutionName} />
+				<CanonicalRow label="issuanceDate" value={claims.issuanceDate} />
+			</dl>
+		</div>
+	);
+}
+
+function CanonicalRow({ label, value }: { label: string; value: string }) {
+	return (
+		<div>
+			<dt className="text-text-tertiary">{label}</dt>
+			<dd className="break-all text-text-primary">{value}</dd>
 		</div>
 	);
 }
@@ -499,7 +476,7 @@ function ResultCard({ result }: { result: VerificationResult }) {
 			title: "text-accent-red",
 			label: "✗ Tampered",
 			explanation:
-				"A certificate with this ID exists, but the claims hash does not match. The presented credential has been modified.",
+				"A certificate with this ID exists, but the claims hash does not match. The presented credential has been modified or the typed values differ from the issued ones.",
 		},
 		revoked: {
 			badge: "bg-accent-orange/10 text-accent-orange border-accent-orange/30",

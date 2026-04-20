@@ -172,11 +172,13 @@ export default function PublicVerifyPage() {
 			) : null}
 
 			<div className="card border border-white/[0.08] bg-white/[0.02] text-sm text-text-secondary">
-				Looking for the JSON-paste verifier? Use the{" "}
+				Need to also check that the credential's content matches what the holder
+				claims? Use the{" "}
 				<Link to="/verify" className="text-accent-blue hover:underline">
 					Verify
 				</Link>{" "}
-				tab to recompute the claims hash from a credential JSON.
+				tab and pick <strong>Validate Information Integrity</strong> to recompute the
+				claims hash from holder name, degree, institution and issuance month.
 			</div>
 		</div>
 	);
@@ -267,6 +269,28 @@ function ResultCard({
 					reflects historical issuance — the registry deliberately does not invalidate
 					past certificates when an issuer's status changes.
 				</p>
+			)}
+
+			{data.exists && (
+				<div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 flex flex-wrap items-center justify-between gap-3">
+					<div className="min-w-0">
+						<p className="text-sm text-text-primary">
+							Want to also confirm the certificate's content matches what the
+							holder claims?
+						</p>
+						<p className="text-xs text-text-muted mt-1">
+							Type the holder name, degree, institution and issuance month — we
+							hash them with the same canonical rules the issuer used and
+							compare against this certificate's on-chain hash.
+						</p>
+					</div>
+					<Link
+						to={`/verify?mode=integrity&cert=${data.certificateId}`}
+						className="btn-secondary text-xs whitespace-nowrap"
+					>
+						Validate claim integrity →
+					</Link>
+				</div>
 			)}
 		</div>
 	);
