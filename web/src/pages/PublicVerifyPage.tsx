@@ -15,7 +15,6 @@ import { getPublicClient } from "../config/evm";
 import { deployments } from "../config/deployments";
 import { useChainStore } from "../store/chainStore";
 
-const CERT_ID_RE = /^0x[0-9a-fA-F]{64}$/;
 const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000";
 
 interface VerificationData {
@@ -48,7 +47,7 @@ export default function PublicVerifyPage() {
 	const [error, setError] = useState<string | null>(null);
 
 	const rawId = params.certificateId ?? "";
-	const idValid = CERT_ID_RE.test(rawId);
+	const idValid = /^0x[0-9a-fA-F]{64}$/.test(rawId);
 
 	useEffect(() => {
 		if (!idValid || !univerifyAddress) return;
