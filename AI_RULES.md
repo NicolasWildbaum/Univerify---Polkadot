@@ -75,7 +75,7 @@ Do NOT invent new storage layouts, enum values, or events without updating `BACK
 ## Security & Data Rules
 
 - NEVER store PII on-chain. Names, emails, student IDs belong off-chain.
-- Use hashes (`claimsHash`) and commitments (`recipientCommitment`) for sensitive bindings.
+- Use `claimsHash` for claim integrity. Holder binding is the soulbound NFT minted by `CertificateNft` — do not reintroduce a separate holder commitment unless there is a concrete verification flow that consumes it.
 - Validate all inputs: non-zero addresses, non-empty / bounded names, non-zero hashes.
 - Preserve the `CannotProposeSelfRemoval` / `CannotVoteOnOwnRemoval` invariants.
 

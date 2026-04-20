@@ -24,9 +24,10 @@ On-chain certificate fields:
 - `certificateId` — unique mapping key, derived off-chain
 - `issuer` — H160 of the active university
 - `claimsHash` — deterministic hash of canonical claims
-- `recipientCommitment` — privacy-preserving commitment to the holder
 - `issuedAt` — block timestamp
 - `revoked` — bool
+
+Holder binding is handled exclusively by the soulbound `CertificateNft` minted to the student's wallet in the same transaction; there is no separate holder commitment stored on-chain.
 
 There is **no public enumeration by holder identity**. The contract cannot be scanned to find all credentials owned by a given person — except trivially via the soulbound NFT's `tokenOfOwnerByIndex`, which is a deliberate UX trade-off so a student can list their own credentials in the UI without an indexer.
 
@@ -93,6 +94,6 @@ Same `approvalThreshold` governs admission and removal — symmetric trust model
 ## Key Constraints
 
 - Minimal, modular, no over-engineering.
-- No PII on-chain — only hashes, commitments, and addresses.
+- No PII on-chain — only hashes and addresses.
 - No privileged accounts. Any future "rescue" path must go through the federated vote.
 - Historical verifiability: certificates issued by an Active issuer remain verifiable even if that issuer is later removed.

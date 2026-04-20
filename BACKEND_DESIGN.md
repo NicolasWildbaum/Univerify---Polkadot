@@ -51,7 +51,6 @@ struct Issuer {
 struct Certificate {
     address issuer;
     bytes32 claimsHash;
-    bytes32 recipientCommitment;
     uint256 issuedAt;
     bool    revoked;
 }
@@ -127,7 +126,7 @@ Seeds the genesis universities (Active from block 0). Requires `1 ≤ threshold 
 
 | Function                                                                                       | Caller                          | Notes                                                                                                                                    |
 | ---------------------------------------------------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `issueCertificate(certificateId, claimsHash, recipientCommitment, studentAddress)`             | Active issuer                   | Stores the record and atomically calls `CertificateNft.mintFor(studentAddress, certificateId)`. Reverts on duplicate `certificateId`.    |
+| `issueCertificate(certificateId, claimsHash, studentAddress)`                                  | Active issuer                   | Stores the record and atomically calls `CertificateNft.mintFor(studentAddress, certificateId)`. Reverts on duplicate `certificateId`.    |
 | `revokeCertificate(certificateId)`                                                             | Original issuer (still Active)  | Marks `revoked = true`. Reverts if not found, already revoked, caller not the original issuer, or caller no longer Active.               |
 | `verifyCertificate(certificateId, claimsHash)` (view)                                          | Anyone                          | Returns `(exists, issuer, hashMatch, revoked, issuedAt)`. The verifier decides trust off-chain (typically against `isActiveIssuer`).     |
 
@@ -171,7 +170,7 @@ Governance: `NotActiveIssuer`, `ZeroAddress`, `EmptyName`, `NameTooLong`, `Issue
 
 Removal governance: `CannotProposeSelfRemoval`, `RemovalProposalAlreadyOpen`, `RemovalProposalNotFound`, `RemovalProposalAlreadyExecuted`, `AlreadyVotedForRemoval`, `CannotVoteOnOwnRemoval`.
 
-Certificates: `InvalidCertificateId`, `InvalidClaimsHash`, `InvalidRecipientCommitment`, `InvalidStudentAddress`, `CertificateAlreadyExists`, `CertificateNotFound`, `CertificateAlreadyRevoked`, `NotCertificateIssuer`.
+Certificates: `InvalidCertificateId`, `InvalidClaimsHash`, `InvalidStudentAddress`, `CertificateAlreadyExists`, `CertificateNotFound`, `CertificateAlreadyRevoked`, `NotCertificateIssuer`.
 
 NFT wiring: `NftAlreadySet`, `NftNotConfigured`, `NftMinterMismatch`.
 
@@ -200,9 +199,9 @@ Does not verify:
 
 ---
 
-## Privacy: `recipientCommitment`
+## Privacy: Holder Binding
 
-Computed off-chain as `keccak256(abi.encode(secret, holderIdentifier))`. Reveals nothing on-chain. The holder proves recipiency to a verifier off-chain by disclosing the preimage. No reverse mapping `commitment → certificate` exists.
+The credential is bound to its holder exclusively through the soulbound `CertificateNft` minted to the student's wallet in the same transaction as `issueCertificate`. No holder identifier, email, or secret-based commitment is stored on-chain. The registry intentionally keeps a single, auditable holder-binding mechanism — NFT ownership — so there is nothing on-chain that can be brute-forced to re-identify a holder from off-chain knowledge.
 
 ---
 

@@ -134,27 +134,9 @@ const certificateId = deriveCertificateId(
 
 ---
 
-## Computing `recipientCommitment`
+## Holder Binding
 
-The `recipientCommitment` binds the credential to a specific holder without revealing their identity on-chain:
-
-```
-recipientCommitment = keccak256(abi.encode(bytes32 secret, string holderIdentifier))
-```
-
-- `secret`: a random `bytes32` value shared between issuer and holder
-- `holderIdentifier`: a stable identifier (e.g., email, student ID)
-
-The holder proves they are the intended recipient by revealing the preimage (secret + identifier) to a verifier off-chain.
-
-```typescript
-import { computeRecipientCommitment } from "./src/credential";
-
-const recipientCommitment = computeRecipientCommitment(
-  "0xabc...randomSecret",
-  "maria.garcia@uba.edu"
-);
-```
+The credential is bound to its holder **exclusively through the soulbound `CertificateNft`** minted to the student's wallet in the same transaction as `issueCertificate`. The registry does not store any holder identifier, email, or secret-based commitment — there is only one holder-binding mechanism on-chain, and it is the NFT ownership record. If you need stronger identity binding (e.g. a wallet-independent proof the holder controls some off-chain identifier), that has to be layered on top off-chain; it is intentionally not part of this schema.
 
 ---
 
@@ -171,8 +153,7 @@ A presented credential carries the **canonical** claims (already normalized), si
     "holderName": "MARIA GARCIA",
     "institutionName": "UNIVERSIDAD DE BUENOS AIRES",
     "issuanceDate": "2026-03"
-  },
-  "recipientCommitment": "0x..."
+  }
 }
 ```
 
