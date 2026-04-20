@@ -54,7 +54,7 @@ type AuthStatus =
 	| "no-contract"
 	| "active"
 	| "pending"
-	| "suspended"
+	| "removed"
 	| "not-registered";
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -185,7 +185,7 @@ export default function UniverifyIssuerPage() {
 						setOnChainStatus("pending");
 						break;
 					case 3:
-						setOnChainStatus("suspended");
+						setOnChainStatus("removed");
 						break;
 					default:
 						setOnChainStatus("not-registered");
@@ -900,9 +900,9 @@ function BlockedState({ status }: { status: AuthStatus }) {
 			body: "Your wallet has applied but does not yet have enough approvals to become Active. Ask existing universities to approve you on the Governance page.",
 			tone: "orange",
 		},
-		suspended: {
-			title: "Issuer suspended",
-			body: "Your wallet is a Suspended issuer on this contract. Issuance and revocation will revert until the owner unsuspends you.",
+		removed: {
+			title: "Issuer removed by governance",
+			body: "Your wallet has been removed from this Univerify contract by a federated governance vote. Issuance and revocation will revert until — if you choose to — you re-apply on the Governance page and are re-approved by existing Active universities.",
 			tone: "red",
 		},
 		active: { title: "", body: "", tone: "muted" },
@@ -936,10 +936,10 @@ function AuthorizationBadge({ status }: { status: AuthStatus }) {
 					⏳ Pending — needs more approvals before issuing
 				</span>
 			);
-		case "suspended":
+		case "removed":
 			return (
 				<span className="status-badge border bg-accent-red/10 text-accent-red border-accent-red/30">
-					✗ Suspended — issuance and revocation will revert
+					✗ Removed by governance — issuance and revocation will revert
 				</span>
 			);
 		case "not-registered":

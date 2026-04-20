@@ -34,7 +34,7 @@ const STATUS_LABEL: Record<number, string> = {
 	0: "None",
 	1: "Pending",
 	2: "Active",
-	3: "Suspended",
+	3: "Removed",
 };
 
 export default function PublicVerifyPage() {
