@@ -2,218 +2,241 @@
 
 ## Overview
 
-This document defines the data model and behavior of the `Univerify` Solidity smart contract — a **verifiable academic credential registry**.
+Two contracts, fully decentralized, no privileged operator:
 
-The contract records the **existence, integrity, issuer, and revocation status** of academic certificates on-chain. Verification is **presentation-based**: the holder controls which credential they present, and the verifier checks it against the on-chain record.
+- **`Univerify.sol`** — federated registry: issuer governance + certificate lifecycle + verification.
+- **`CertificateNft.sol`** — soulbound ERC-721 minted atomically on issuance, mirroring revocation.
 
-This design MUST be followed strictly.
+Verification is **presentation-based**: a verifier recomputes `claimsHash` off-chain and calls `verifyCertificate`. No PII on-chain.
 
 ---
 
 ## Core Principles
 
-- **Credentials, not documents.** A certificate is a structured credential issued by an authorized institution, not a PDF or file.
-- **Presentation-based verification.** A verifier only sees what the holder chooses to present. There is no public discovery of certificates by student identity.
-- **No PII on-chain.** The blockchain stores only hashes and addresses — never names, emails, or any personal data.
-- **Minimal on-chain footprint.** Only what is needed for integrity verification is stored.
+- **Credentials, not documents.** Structured claims + on-chain hash, not files.
+- **Federated governance, no owner.** All write privileges flow from Active-issuer status.
+- **Presentation-based verification.** No public discovery by holder identity.
+- **Soulbound ownership.** The NFT mirrors registry state; transfers and approvals revert.
+- **Historical verifiability.** Certificates remain verifiable even if their issuer is later removed.
 
 ---
 
 ## Entities
 
-### Issuer
+### `IssuerStatus` (enum)
 
-Represents an authorized institution (university) that can issue certificates.
+| Value | Meaning                                                                       |
+| ----- | ----------------------------------------------------------------------------- |
+| `None` | Default zero — never registered.                                              |
+| `Pending` | Applied via `applyAsIssuer`, awaiting `approvalThreshold` approvals.        |
+| `Active` | Can issue, revoke, approve applicants, propose / vote removals.             |
+| `Removed` | Removed by federated vote. May re-apply (returns to `Pending`, fresh epoch). |
 
-Fields:
+### `Issuer` (struct)
 
-- `account` (address)
-- `status` (Active / Suspended)
-- `metadataHash` (bytes32) — hash of off-chain issuer metadata (name, DID, etc.)
+```
+struct Issuer {
+    address account;
+    IssuerStatus status;
+    bytes32 metadataHash;     // off-chain pointer (IPFS CID, DID doc, ...)
+    string  name;             // ≤ MAX_NAME_LENGTH (64 bytes UTF-8)
+    uint64  registeredAt;     // block.timestamp at last apply
+    uint32  approvalCount;    // approvals collected in the current epoch
+}
+```
 
----
+### `Certificate` (struct)
 
-### Certificate
+```
+struct Certificate {
+    address issuer;
+    bytes32 claimsHash;
+    bytes32 recipientCommitment;
+    uint256 issuedAt;
+    bool    revoked;
+}
+```
 
-Represents an issued academic credential record.
+### `RemovalProposal` (struct)
 
-**Primary identity:** each certificate is keyed and looked up by `certificateId`, a unique identifier generated off-chain by the issuer.
-
-Fields:
-
-- `issuer` (address) — the authorized issuer that registered this credential
-- `claimsHash` (bytes32) — deterministic hash of the canonical credential claims (e.g., `keccak256(abi.encode(claims))`)
-- `recipientCommitment` (bytes32) — privacy-preserving commitment binding the credential to its holder (e.g., `keccak256(secret || holderIdentifier)`)
-- `issuedAt` (uint256) — block timestamp when the credential was registered on-chain
-- `revoked` (bool) — whether the certificate has been revoked
-
----
-
-## Certificate Identity and Lookup
-
-- `certificateId` is the **only** on-chain lookup key for a certificate.
-- The issuer generates `certificateId` off-chain using any deterministic unique scheme (e.g., UUID hash, sequential nonce hash, etc.).
-- **Uniqueness:** at most one certificate per `certificateId`; duplicate issuance reverts.
-- **No enumeration:** there are no arrays, counters, or student-to-certificate mappings. The contract cannot be scanned for all certificates or filtered by student.
+```
+struct RemovalProposal {
+    address target;
+    address proposer;
+    uint64  createdAt;
+    uint32  voteCount;        // proposer is counted as the first vote
+    bool    executed;
+}
+```
 
 ---
 
 ## Storage
 
-### Authorized Issuers
-
 ```
-mapping(address => bool) public authorizedIssuers;
-mapping(address => IssuerProfile) public issuerProfiles;
-```
+// Top-level
+uint32 public immutable approvalThreshold;        // governs admission and removal
+uint32 public activeIssuerCount;                  // bookkeeping for the UI
+address public certificateNft;                    // wired once via setCertificateNft
 
-### Certificates
+// Issuers
+mapping(address => Issuer) private _issuers;
+address[] private _issuerList;                    // append-only enumeration
+mapping(address => uint32) public issuerEpoch;    // bumped on Removed → Pending re-apply
+mapping(address => mapping(uint32 => mapping(address => bool))) private _hasApproved;
+                                                  // candidate => epoch => approver => bool
 
-```
+// Removal governance
+uint256 public removalProposalCount;
+mapping(uint256 => RemovalProposal) private _removalProposals;
+mapping(uint256 => mapping(address => bool)) private _hasVotedOnRemoval;
+mapping(address => uint256) public openRemovalProposal;   // 0 = none
+
+// Certificates
 mapping(bytes32 => Certificate) public certificates;
 ```
 
-The mapping key is `certificateId`.
+`certificateId` is the **only** lookup key. No student-to-certificate mapping on the registry side. The soulbound NFT exposes per-holder enumeration as a UX convenience for the student themselves; the registry does not.
 
 ---
 
 ## Functions
 
-### registerIssuer
+### Constructor
 
-Admin only. Registers a new authorized issuer with metadata.
+```
+constructor(GenesisIssuer[] memory genesis, uint32 threshold)
+```
 
-### setIssuerStatus
+Seeds the genesis universities (Active from block 0). Requires `1 ≤ threshold ≤ genesis.length`. `activeIssuerCount` starts at `genesis.length`.
 
-Admin only. Enables or disables an issuer.
+### Issuer governance
 
-### issueCertificate
+| Function                             | Caller             | Effect                                                                                              |
+| ------------------------------------ | ------------------ | --------------------------------------------------------------------------------------------------- |
+| `applyAsIssuer(name, metadataHash)`  | Anyone             | `None → Pending` (new slot) or `Removed → Pending` (reuses slot, bumps `issuerEpoch`).              |
+| `approveIssuer(candidate)`           | Active issuer      | Records vote at `(candidate, currentEpoch, msg.sender)`. Promotes to `Active` once threshold met.   |
+| `proposeRemoval(target)`             | Active issuer      | Opens proposal (proposer's vote counted = 1). Self-proposal disallowed.                             |
+| `voteForRemoval(proposalId)`         | Active issuer      | Adds vote. Target cannot vote on own removal. Executes (`Active → Removed`) when threshold reached. |
 
-Callable only by authorized issuers.
+`applyAsIssuer` reverts `IssuerAlreadyExists` only for `Pending` or `Active` callers. Re-application from `Removed` is the explicit re-onboarding path; bumping `issuerEpoch` invalidates all prior approvals without iterating storage.
 
-Inputs:
+`approveIssuer` and the `hasApproved(candidate, approver)` view both read through `issuerEpoch[candidate]`, so previous-round records cannot bleed into the current round.
 
-- `certificateId` (bytes32)
-- `claimsHash` (bytes32)
-- `recipientCommitment` (bytes32)
+### Certificate lifecycle
 
-Stores the certificate at `certificates[certificateId]`. Reverts if a certificate already exists for that `certificateId`. Returns `certificateId`.
+| Function                                                                                       | Caller                          | Notes                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `issueCertificate(certificateId, claimsHash, recipientCommitment, studentAddress)`             | Active issuer                   | Stores the record and atomically calls `CertificateNft.mintFor(studentAddress, certificateId)`. Reverts on duplicate `certificateId`.    |
+| `revokeCertificate(certificateId)`                                                             | Original issuer (still Active)  | Marks `revoked = true`. Reverts if not found, already revoked, caller not the original issuer, or caller no longer Active.               |
+| `verifyCertificate(certificateId, claimsHash)` (view)                                          | Anyone                          | Returns `(exists, issuer, hashMatch, revoked, issuedAt)`. The verifier decides trust off-chain (typically against `isActiveIssuer`).     |
 
-### revokeCertificate
+### NFT wiring
 
-Callable by the **original issuer** of the certificate.
+```
+function setCertificateNft(address nft) external
+```
 
-Inputs:
+**Permissionless and one-shot.** Reverts on `ZeroAddress`, `NftAlreadySet`, or `NftMinterMismatch` (the NFT's immutable `minter()` must equal `address(this)`). The minter check is the security backstop — an NFT wired here can only be minted by this registry, so a mis-wiring can at worst deny service and require a redeploy. Front-running is mitigated by deploying both contracts and calling this in the same script (`scripts/deploy-univerify.ts`).
 
-- `certificateId` (bytes32)
+### Read helpers
 
-Marks the certificate as revoked. Reverts if the certificate does not exist, is already revoked, or the caller is not the original issuer.
-
-### verifyCertificate
-
-Public view function. Convenience function for verifiers.
-
-Inputs:
-
-- `certificateId` (bytes32)
-- `claimsHash` (bytes32) — recomputed from the presented credential
-
-Returns:
-
-- `exists` (bool)
-- `issuer` (address)
-- `hashMatch` (bool) — whether the presented claimsHash matches the stored one
-- `revoked` (bool)
-- `issuedAt` (uint256)
+`getIssuer`, `isActiveIssuer`, `hasApproved`, `issuerCount`, `issuerAt`, `getRemovalProposal`, `hasVotedOnRemoval`, `issuerEpoch`, `removalProposalCount`, `openRemovalProposal`.
 
 ---
 
 ## Events
 
-- `IssuerRegistered(address indexed issuer)`
-- `IssuerStatusChanged(address indexed issuer, bool active)`
-- `CertificateIssued(bytes32 indexed certificateId, address indexed issuer)`
-- `CertificateRevoked(bytes32 indexed certificateId, address indexed issuer)`
+```
+event IssuerApplied(address indexed issuer, string name, bytes32 metadataHash);
+event IssuerApproved(address indexed approver, address indexed issuer, uint32 approvalCount);
+event IssuerActivated(address indexed issuer);
+
+event RemovalProposalCreated(uint256 indexed proposalId, address indexed target, address indexed proposer);
+event RemovalVoteCast(uint256 indexed proposalId, address indexed voter, uint32 voteCount);
+event IssuerRemoved(address indexed issuer, uint256 indexed proposalId);
+
+event CertificateIssued(bytes32 indexed certificateId, address indexed issuer, address indexed student);
+event CertificateRevoked(bytes32 indexed certificateId, address indexed issuer);
+event CertificateNftSet(address indexed nft);
+```
+
+`IssuerApplied` is re-emitted on re-application (the new `name` / `metadataHash` is in the event payload; epoch is observable via `issuerEpoch`).
 
 ---
 
 ## Errors
 
-- `NotOwner`
-- `UnauthorizedIssuer`
-- `InvalidIssuerAddress`
-- `IssuerAlreadyRegistered`
-- `IssuerNotFound`
-- `InvalidCertificateId`
-- `InvalidClaimsHash`
-- `InvalidRecipientCommitment`
-- `CertificateAlreadyExists`
-- `CertificateNotFound`
-- `CertificateAlreadyRevoked`
-- `NotCertificateIssuer`
+Governance: `NotActiveIssuer`, `ZeroAddress`, `EmptyName`, `NameTooLong`, `IssuerAlreadyExists`, `IssuerNotFound`, `IssuerNotPending`, `IssuerNotActive`, `CannotApproveSelf`, `AlreadyApproved`, `InvalidThreshold`, `InvalidGenesis`.
+
+Removal governance: `CannotProposeSelfRemoval`, `RemovalProposalAlreadyOpen`, `RemovalProposalNotFound`, `RemovalProposalAlreadyExecuted`, `AlreadyVotedForRemoval`, `CannotVoteOnOwnRemoval`.
+
+Certificates: `InvalidCertificateId`, `InvalidClaimsHash`, `InvalidRecipientCommitment`, `InvalidStudentAddress`, `CertificateAlreadyExists`, `CertificateNotFound`, `CertificateAlreadyRevoked`, `NotCertificateIssuer`.
+
+NFT wiring: `NftAlreadySet`, `NftNotConfigured`, `NftMinterMismatch`.
+
+`CertificateNft` adds: `NotMinter`, `AlreadyMinted`, `InvalidStudent`, `SoulboundNonTransferable`, `SoulboundNoApprovals`.
 
 ---
 
-## Verification Model
+## Verification model
 
-The blockchain verifies:
+Verifies on-chain:
 
-- **Existence** of a certificate for the given `certificateId`
-- **Integrity**: the `claimsHash` recomputed from the presented credential matches the on-chain record
-- **Issuer authenticity**: the `issuer` address is readable from the record (and can be checked against the authorized issuers registry)
-- **Revocation status**: whether the certificate has been revoked
+- **Existence** of a record at `certificateId`.
+- **Integrity**: presented `claimsHash` matches the stored one.
+- **Issuer authenticity**: `issuer` is readable; verifier checks `isActiveIssuer(issuer)` (or accepts a previously-Active issuer).
+- **Revocation status**.
 
-The blockchain DOES NOT verify:
+Does not verify:
 
-- Real-world identity of the holder
-- Content of the credential claims (only the hash)
-
-### Verification Flow
-
-1. Holder presents a credential (structured data, e.g., JSON) to a verifier.
-2. The credential includes the `certificateId` and the full claims.
-3. The verifier recomputes `claimsHash = keccak256(canonicalClaims)`.
-4. The verifier calls `verifyCertificate(certificateId, claimsHash)`.
-5. The verifier checks: `exists && hashMatch && !revoked && issuer is trusted`.
-
-### What a PDF is (and is not)
-
-- A PDF (or any visual document) is an **optional rendering** of the credential.
-- The PDF is NOT the source of truth — the structured credential is.
-- Verification MUST always go through the on-chain record via `certificateId` + `claimsHash`.
+- Real-world holder identity.
+- Content of the claims (only the hash).
 
 ---
 
-## Privacy: recipientCommitment
+## Privacy: `recipientCommitment`
 
-The `recipientCommitment` field allows the issuer to bind a credential to a specific holder without revealing the holder's identity on-chain.
+Computed off-chain as `keccak256(abi.encode(secret, holderIdentifier))`. Reveals nothing on-chain. The holder proves recipiency to a verifier off-chain by disclosing the preimage. No reverse mapping `commitment → certificate` exists.
 
-- Computed as, for example: `keccak256(abi.encode(secret, holderIdentifier))`
-- The holder can prove they are the intended recipient by revealing the preimage to the verifier off-chain.
-- The on-chain value alone reveals nothing about the holder.
-- There are no mappings from `recipientCommitment` to certificates, preventing reverse lookups.
+---
+
+## Soulbound NFT (`CertificateNft`)
+
+- Standard ERC-721 + ERC-721Enumerable.
+- All transfer / approval entry points revert (`SoulboundNonTransferable`, `SoulboundNoApprovals`).
+- Immutable `minter` and `registry` (set in constructor; the registry calls `minter == registry` here).
+- `mintFor(to, certificateId)` is `onlyMinter`. `tokenId` is sequential starting at 1; `certIdToTokenId` and `tokenIdToCertId` expose the bijection.
+- `isRevoked(tokenId)` proxies the registry, so the NFT layer never goes out of sync.
 
 ---
 
 ## Design Constraints
 
-- No PII on-chain
-- No public enumeration of certificates
-- No student-to-certificate indexing
-- Minimal storage (5 fields per certificate)
-- Deterministic behavior
-- Simple access control (owner + authorized issuers)
-- Presentation-based verification path: credential → claimsHash → on-chain lookup
+- No PII on-chain.
+- No public enumeration by holder on the registry side. NFT enumeration is per-owner only.
+- Minimal storage per certificate (5 fields).
+- Federated access control — no owner, no admin, no role hierarchy.
+- Symmetric admission and removal threshold (`approvalThreshold` reused).
+- Re-application via `issuerEpoch` keeps storage bounded (no per-removal mass writes).
 
 ---
 
-## Future Extensions (Not MVP)
+## Known governance trade-offs (MVP, accepted)
 
-- Selective disclosure of credential attributes
-- DID-based issuer resolution
-- Multi-signature issuance or co-signing
-- On-chain credential schema registry
-- Batch issuance
-- Governance-based issuer approval
+- If `activeIssuerCount` drops below `approvalThreshold`, both admission and removal stall. Recovery requires a redeploy. Accepted to keep the model simple.
+- `_maybeExecuteRemoval` does **not** retroactively decrement votes when a prior voter is itself removed. Each vote was valid at cast time.
+- `setCertificateNft` is permissionless. The `minter()` self-check + same-script wiring is the practical mitigation; redeploy if front-run.
 
-DO NOT implement these now.
+---
+
+## Future Extensions (not MVP)
+
+- Timelocks / cooldowns on removal.
+- Dynamic threshold scaling with `activeIssuerCount`.
+- Selective disclosure of attributes.
+- DID-based issuer resolution.
+- On-chain credential schema registry.
+- Batch issuance.
+
+Do not implement these without explicit scope expansion.

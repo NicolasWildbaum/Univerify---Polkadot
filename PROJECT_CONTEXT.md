@@ -1,86 +1,98 @@
 # PROJECT CONTEXT
 
 ## Project Name
-Univerify (working name)
+
+Univerify — federated academic credential registry on Polkadot.
 
 ## Overview
-This project is a Web3 application built on the Polkadot ecosystem for issuing and verifying academic certificates on-chain using Solidity smart contracts running in an EVM environment.
 
-The system allows authorized educational institutions (issuers) to register verifiable credential records on-chain. Verification is **presentation-based**: a holder presents their credential to a verifier, and the verifier checks existence, integrity, issuer authenticity, and revocation status against the blockchain.
+Web3 application built on the Polkadot ecosystem (EVM contracts via `pallet-revive`) that lets a **federation of universities** issue and verify academic certificates on-chain. Verification is **presentation-based**: the holder presents a structured credential to a verifier, who recomputes its hash and checks the on-chain record.
+
+The system has **no privileged operator** — no owner, no admin, no emergency authority. The active universities collectively govern who joins (`apply` + `approve`) and who is removed (`proposeRemoval` + `voteForRemoval`), with the same approval threshold reused for both paths.
 
 ## Core Idea
-Each certificate is represented on-chain as a **verifiable credential record**, not as a document or file hash.
 
-The issuer constructs a structured credential (claims), computes a deterministic hash (`claimsHash`), and registers it on-chain under a unique `certificateId`. The holder receives the full credential off-chain and controls what they present to verifiers.
+A certificate is a **verifiable credential record** (not a PDF and not a file hash). The issuer:
 
-On-chain fields:
+1. Builds canonical claims off-chain.
+2. Computes `claimsHash = keccak256(abi.encode(claims))`.
+3. Registers it on-chain under a unique `certificateId` (derived from `issuer` + `internalRef`).
+4. Atomically mints a **soulbound ERC-721** to the student's wallet (`CertificateNft`) so the holder owns a non-transferable token mirroring the on-chain record.
 
-- **`certificateId`** — unique identifier (mapping key), generated off-chain by the issuer
-- **`issuer`** — address of the authorized institution that issued the credential
-- **`claimsHash`** — deterministic hash of the canonical credential claims
-- **`recipientCommitment`** — privacy-preserving commitment binding the credential to its holder
-- **`issuedAt`** — block timestamp of on-chain registration
-- **`revoked`** — revocation status (bool)
+On-chain certificate fields:
 
-There is **no** public enumeration or discovery of certificates by student identity. The contract cannot be scanned or filtered to find all certificates belonging to a given person.
+- `certificateId` — unique mapping key, derived off-chain
+- `issuer` — H160 of the active university
+- `claimsHash` — deterministic hash of canonical claims
+- `recipientCommitment` — privacy-preserving commitment to the holder
+- `issuedAt` — block timestamp
+- `revoked` — bool
 
-The blockchain acts as a **source of truth for authenticity and integrity**, not for identity or content.
+There is **no public enumeration by holder identity**. The contract cannot be scanned to find all credentials owned by a given person — except trivially via the soulbound NFT's `tokenOfOwnerByIndex`, which is a deliberate UX trade-off so a student can list their own credentials in the UI without an indexer.
 
 ## Verification Model
-Verification follows a presentation-based flow:
 
-1. A holder presents a structured credential (e.g., JSON) to a verifier.
-2. The credential includes the `certificateId` and the full claims data.
-3. The verifier recomputes `claimsHash = keccak256(canonicalClaims)`.
-4. The verifier calls `verifyCertificate(certificateId, claimsHash)` on-chain.
-5. If the record exists, the hash matches, the issuer is trusted, and the certificate is not revoked → the credential is verified.
+1. Holder presents a structured credential to the verifier.
+2. Verifier recomputes `claimsHash`.
+3. Verifier calls `verifyCertificate(certificateId, claimsHash)`.
+4. Trust decision: `exists && hashMatch && !revoked && isActiveIssuer(issuer)` (or accepts an issuer that was Active at issuance — historical certificates remain verifiable even if the issuer is later removed by governance).
 
-### What a PDF is (and is not)
-A PDF (or any visual document) is an **optional rendering** of the credential for human readability. It is NOT the source of truth. Verification always goes through the structured credential data and the on-chain record.
+A PDF is at most an optional human-readable rendering. The structured credential and the on-chain record are the source of truth.
 
-## MVP Scope (STRICT)
+## Governance Model (federated, no owner)
 
-The MVP includes:
+| Actor             | Powers                                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------------------- |
+| Genesis issuers   | Active from block 0, set in the constructor.                                                    |
+| Pending applicant | Has called `applyAsIssuer`, awaiting `approvalThreshold` approvals.                             |
+| Active issuer     | Issues, revokes (own certs), approves applicants, proposes/votes removals.                      |
+| Removed issuer    | Cannot act. **May re-apply** via `applyAsIssuer`; a per-issuer `issuerEpoch` invalidates prior-round approvals so they need a fresh quorum to be re-admitted. |
 
-- Register authorized issuers (admin-controlled)
-- Issue certificates as verifiable credential records (`certificateId` + `claimsHash` + `recipientCommitment`)
-- Revoke certificates by `certificateId` (original issuer only)
-- Verify certificates via `verifyCertificate(certificateId, claimsHash)`
-- No public enumeration or student-based indexing
+Same `approvalThreshold` governs admission and removal — symmetric trust model. No timelocks, no quorum scaling, no off-chain voting. Self-proposal of removal is rejected; the target of a proposal cannot vote on it.
 
-## Out of Scope (for MVP)
+## NFT Wiring
 
-- Selective disclosure of credential attributes
-- Decentralized organization validation
-- Governance mechanisms
-- DID / W3C Verifiable Credentials standard compliance
-- Identity resolution on-chain
-- Complex indexing or querying
-- Batch issuance
-- Advanced access control models
+`CertificateNft` is a soulbound ERC-721 (no transfers, no approvals, `isRevoked` mirrors the registry). Wired post-deploy via `setCertificateNft`, which is **permissionless and one-shot**: the only safety gate is that the NFT's immutable `minter()` must already be the registry address. Front-running is mitigated by deploying both contracts and calling `setCertificateNft` in the same script.
+
+## MVP Scope (current)
+
+- Federated governance: `applyAsIssuer`, `approveIssuer`, `proposeRemoval`, `voteForRemoval`, with re-application via `issuerEpoch`.
+- Issue / revoke / verify certificates with atomic soulbound NFT mint.
+- Frontend: governance page (apply, re-apply, approve, propose, vote), issuer page (issue/revoke), public verify page, my-certificates page (via NFT enumeration).
+
+## Out of Scope (deliberate)
+
+- Timelocks, quorum scaling, dynamic majorities.
+- Selective disclosure of attributes.
+- DID / W3C VC standard compliance.
+- On-chain identity resolution.
+- Batch issuance, schema registry.
 
 ## Tech Stack
 
-- Backend: Solidity Smart Contract (EVM)
-- Frontend: Web App (React/Vite from template)
-- Network: Paseo (for deployment)
+- Smart contracts: Solidity 0.8.28 (`Univerify.sol`, `CertificateNft.sol`), Hardhat.
+- Frontend: React 18 + Vite + TypeScript + Tailwind, viem (reads), PAPI + `pallet_revive::call` (writes signed by the connected Polkadot wallet).
+- Network: Polkadot Hub TestNet (Paseo) and the local dev chain via `eth-rpc`.
 
-## Template Structure (IMPORTANT)
+## Project Layout (relevant slices)
 
-This project is built on the `polkadot-stack-template`.
+- `contracts/evm/contracts/Univerify.sol` — registry + governance.
+- `contracts/evm/contracts/CertificateNft.sol` — soulbound NFT.
+- `contracts/evm/test/` — Hardhat tests for both.
+- `contracts/evm/scripts/deploy-univerify.ts` — deploys Univerify + NFT and wires them in one script.
+- `web/src/pages/GovernancePage.tsx` — federated governance UI.
+- `web/src/pages/UniverifyIssuerPage.tsx` — issue / revoke.
+- `web/src/pages/PublicVerifyPage.tsx` — verifier UX.
+- `web/src/pages/MyCertificatesPage.tsx` — student view via NFT enumeration.
+- `web/src/config/univerify.ts` — ABI + `IssuerStatus` mirror.
+- `web/src/utils/contractErrors.ts` — custom-error parser.
+- `web/src/account/reviveCall.ts` — Substrate-side write path (`pallet_revive::call`).
 
-Relevant directories:
+`blockchain/` and `cli/` come from the underlying template and are not used by Univerify.
 
-- `contracts/evm/` → MAIN BACKEND (Solidity)
-- `web/` → frontend
-- `blockchain/` → NOT USED
-- `cli/` → NOT USED
+## Key Constraints
 
-## Key Constraint
-
-This project MUST:
-
-- Keep a minimal, modular design
-- Avoid over-engineering
-- Remain fully functional within 2 weeks
-- Prioritize presentation-based verification over public discoverability
+- Minimal, modular, no over-engineering.
+- No PII on-chain — only hashes, commitments, and addresses.
+- No privileged accounts. Any future "rescue" path must go through the federated vote.
+- Historical verifiability: certificates issued by an Active issuer remain verifiable even if that issuer is later removed.

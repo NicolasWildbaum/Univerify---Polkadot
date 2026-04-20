@@ -153,7 +153,7 @@ A verifier:
 2. Recomputes `claimsHash = computeClaimsHash(claims)`.
 3. Calls `verifyCertificate(certificateId, claimsHash)` on-chain.
 4. Checks: `exists && hashMatch && !revoked`.
-5. Optionally checks that `issuer` is a trusted institution (via `authorizedIssuers(issuer)`).
+5. Optionally checks that `issuer` is part of the federation via `isActiveIssuer(issuer)`. Certificates issued when the issuer was Active remain cryptographically verifiable even if that issuer is later removed by governance; the trust decision at that point is up to the verifier.
 
 ---
 
