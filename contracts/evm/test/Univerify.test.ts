@@ -1871,7 +1871,7 @@ describe("Univerify", function () {
 			degreeTitle: "Bachelor of Computer Science",
 			holderName: "Maria Garcia",
 			institutionName: "UDELAR",
-			issuanceDate: "2026-03-15",
+			issuanceDate: "2026-03",
 		};
 		const internalRef = "UDELAR-CS-2026-00142";
 		const secret = keccak256(toBytes("holder-secret-entropy"));
@@ -1963,6 +1963,79 @@ describe("Univerify", function () {
 
 		it("keeps certificateId2 distinct from certificateId", function () {
 			expect(certificateId).to.not.equal(certificateId2);
+		});
+
+		// ── Schema v2 normalization ──────────────────────────────────
+
+		it("normalizes casing and whitespace before hashing", function () {
+			const h1 = computeClaimsHash(sampleClaims);
+			const h2 = computeClaimsHash({
+				degreeTitle: "  bachelor   of  computer SCIENCE ",
+				holderName: "MARIA   garcia",
+				institutionName: " udelar ",
+				issuanceDate: "2026-03",
+			});
+			expect(h1).to.equal(h2);
+		});
+
+		it("accepts legacy YYYY-MM-DD and canonicalizes it to YYYY-MM", function () {
+			const fromMonth = computeClaimsHash(sampleClaims);
+			const fromIsoDate = computeClaimsHash({
+				...sampleClaims,
+				issuanceDate: "2026-03-15",
+			});
+			expect(fromIsoDate).to.equal(fromMonth);
+		});
+
+		it("rejects an invalid issuanceDate", function () {
+			expect(() =>
+				computeClaimsHash({ ...sampleClaims, issuanceDate: "March 2026" }),
+			).to.throw(/Invalid issuanceDate/);
+			expect(() =>
+				computeClaimsHash({ ...sampleClaims, issuanceDate: "2026-13" }),
+			).to.throw(/Invalid issuanceDate/);
+			expect(() =>
+				computeClaimsHash({ ...sampleClaims, issuanceDate: "2026/03" }),
+			).to.throw(/Invalid issuanceDate/);
+		});
+
+		it("produces different hashes for different issuance months", function () {
+			const march = computeClaimsHash({ ...sampleClaims, issuanceDate: "2026-03" });
+			const april = computeClaimsHash({ ...sampleClaims, issuanceDate: "2026-04" });
+			expect(march).to.not.equal(april);
+		});
+
+		it("verifies on-chain when the verifier types lower-cased claims", async function () {
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
+
+			const built = buildCredential({
+				issuer: alice.account.address,
+				internalRef,
+				claims: sampleClaims,
+				secret,
+				holderIdentifier,
+			});
+
+			await univerify.write.issueCertificate(
+				[built.certificateId, built.claimsHash, built.recipientCommitment, student.account.address],
+				{ account: alice.account },
+			);
+
+			// Verifier re-types the claims in a totally different casing /
+			// whitespace shape — Schema v2 normalization makes this match.
+			const verifierHash = computeClaimsHash({
+				degreeTitle: "bachelor of computer science",
+				holderName: "  maria   garcia ",
+				institutionName: "udelar",
+				issuanceDate: "2026-03",
+			});
+
+			const [, , hashMatch] = (await univerify.read.verifyCertificate([
+				built.certificateId,
+				verifierHash,
+			])) as readonly [boolean, Address, boolean, boolean, bigint];
+
+			expect(hashMatch).to.equal(true);
 		});
 	});
 });

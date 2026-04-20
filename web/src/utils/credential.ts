@@ -17,6 +17,12 @@ import { encodeAbiParameters, keccak256, type Hex } from "viem";
 /**
  * The canonical set of claims that constitute an academic credential.
  * Fields are sorted alphabetically by key when hashed.
+ *
+ * Schema v2: strings are normalized (NFC + trim + collapse whitespace +
+ * UPPERCASE) and `issuanceDate` is reduced to `YYYY-MM` before hashing,
+ * so the verifier reproduces the same `claimsHash` regardless of casing
+ * or accidental whitespace differences. Use `normalizeClaims` to inspect
+ * the canonical form that will actually be hashed.
  */
 export interface CredentialClaims {
 	/** Name of the degree or certificate (e.g. "Bachelor of Computer Science") */
@@ -25,21 +31,79 @@ export interface CredentialClaims {
 	holderName: string;
 	/** Issuing institution name (e.g. "Universidad de Buenos Aires") */
 	institutionName: string;
-	/** ISO 8601 date string of academic issuance (e.g. "2026-03-15") */
+	/** Year-month of academic issuance as `YYYY-MM` (e.g. "2026-03"). Legacy
+	 *  `YYYY-MM-DD` inputs are accepted and reduced to `YYYY-MM` by
+	 *  `normalizeClaims`; any other shape throws. */
 	issuanceDate: string;
+}
+
+// ── Normalization (Schema v2) ───────────────────────────────────────
+
+/**
+ * Normalize a free-form claim string so issuer and verifier always feed
+ * the exact same bytes into `keccak256`:
+ *   1. Unicode NFC (avoids visually-identical but binary-different code points).
+ *   2. Trim leading/trailing whitespace.
+ *   3. Collapse internal runs of whitespace to a single space.
+ *   4. Uppercase (default locale; intentional: we don't want Turkish dotless-i
+ *      handling to depend on the verifier's locale).
+ */
+function normalizeText(value: string): string {
+	return value.normalize("NFC").trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+/**
+ * Canonicalize an issuance date input to `YYYY-MM`.
+ *
+ * Accepts:
+ *   - `YYYY-MM` (canonical form, returned unchanged after validation)
+ *   - `YYYY-MM-DD` (legacy ISO date — day component is dropped)
+ *
+ * Throws on any other shape, on out-of-range months (01-12), or on a
+ * non-4-digit year.
+ */
+function normalizeIssuanceDate(value: string): string {
+	const trimmed = value.trim();
+	const match = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(trimmed);
+	if (!match) {
+		throw new Error(
+			`Invalid issuanceDate "${value}": expected "YYYY-MM" (or legacy "YYYY-MM-DD").`,
+		);
+	}
+	const year = match[1];
+	const month = Number(match[2]);
+	if (month < 1 || month > 12) {
+		throw new Error(`Invalid issuanceDate "${value}": month must be between 01 and 12.`);
+	}
+	return `${year}-${match[2]}`;
+}
+
+/**
+ * Return a fully canonicalized copy of the claims — the exact values that
+ * `computeClaimsHash` will feed into `keccak256(abi.encode(...))`. UI
+ * surfaces (issuer / verifier) use this to show "what will be hashed".
+ */
+export function normalizeClaims(claims: CredentialClaims): CredentialClaims {
+	return {
+		degreeTitle: normalizeText(claims.degreeTitle),
+		holderName: normalizeText(claims.holderName),
+		institutionName: normalizeText(claims.institutionName),
+		issuanceDate: normalizeIssuanceDate(claims.issuanceDate),
+	};
 }
 
 /**
  * Compute the canonical `claimsHash` from credential claims.
  *
- * The encoding mirrors `abi.encode(string, string, string, string)` with
- * fields sorted alphabetically by key name:
- *   degreeTitle, holderName, institutionName, issuanceDate
- *
- * This order is fixed and MUST NOT change — any change invalidates all
- * previously issued credentials.
+ * Claims are passed through `normalizeClaims` first, so any difference in
+ * casing, whitespace, Unicode form, or `YYYY-MM-DD` vs `YYYY-MM` does not
+ * change the hash. The encoding then mirrors
+ * `abi.encode(string, string, string, string)` with fields sorted
+ * alphabetically by key name: degreeTitle, holderName, institutionName,
+ * issuanceDate. This order is fixed and MUST NOT change.
  */
 export function computeClaimsHash(claims: CredentialClaims): Hex {
+	const c = normalizeClaims(claims);
 	return keccak256(
 		encodeAbiParameters(
 			[
@@ -48,7 +112,7 @@ export function computeClaimsHash(claims: CredentialClaims): Hex {
 				{ type: "string", name: "institutionName" },
 				{ type: "string", name: "issuanceDate" },
 			],
-			[claims.degreeTitle, claims.holderName, claims.institutionName, claims.issuanceDate],
+			[c.degreeTitle, c.holderName, c.institutionName, c.issuanceDate],
 		),
 	);
 }
@@ -122,14 +186,18 @@ export function buildCredential(params: {
 	recipientCommitment: Hex;
 } {
 	const certificateId = deriveCertificateId(params.issuer, params.internalRef);
-	const claimsHash = computeClaimsHash(params.claims);
+	// Normalize once and reuse: the JSON envelope carries the canonical
+	// strings so a downstream verifier hashes the exact same bytes the
+	// issuer did, even if they re-render or re-key the JSON.
+	const normalizedClaims = normalizeClaims(params.claims);
+	const claimsHash = computeClaimsHash(normalizedClaims);
 	const recipientCommitment = computeRecipientCommitment(params.secret, params.holderIdentifier);
 
 	return {
 		credential: {
 			certificateId,
 			issuer: params.issuer,
-			claims: params.claims,
+			claims: normalizedClaims,
 			recipientCommitment,
 		},
 		claimsHash,
