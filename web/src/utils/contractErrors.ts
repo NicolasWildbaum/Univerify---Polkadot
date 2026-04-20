@@ -14,25 +14,31 @@ import { keccak256, toBytes } from "viem";
 //   3. Plain text scan of the concatenated error messages (last-resort, for
 //      providers that surface revert reasons only as strings).
 
-/** All custom-error names declared by `Univerify.sol`. Keep in sync with the
- *  contract source. The discriminated union lets call sites use exhaustive
- *  switch/match while still falling back to `null` for unknown reverts. */
+/** All custom-error names declared by `Univerify.sol` after the decentralised
+ *  refactor. Keep in sync with the contract source. The discriminated union
+ *  lets call sites use exhaustive switch/match while still falling back to
+ *  `null` for unknown reverts. */
 export type UniverifyErrorName =
 	// Governance errors
-	| "NotOwner"
-	| "ZeroAddress"
 	| "NotActiveIssuer"
-	| "AlreadyApplied"
-	| "AlreadyActive"
-	| "NotPending"
-	| "AlreadySuspended"
-	| "NotSuspended"
-	| "AlreadyApproved"
-	| "SelfApproval"
-	| "InvalidApprovalThreshold"
+	| "ZeroAddress"
 	| "EmptyName"
 	| "NameTooLong"
-	| "DuplicateGenesisIssuer"
+	| "IssuerAlreadyExists"
+	| "IssuerNotFound"
+	| "IssuerNotPending"
+	| "IssuerNotActive"
+	| "CannotApproveSelf"
+	| "AlreadyApproved"
+	| "InvalidThreshold"
+	| "InvalidGenesis"
+	// Removal-governance errors
+	| "CannotProposeSelfRemoval"
+	| "RemovalProposalAlreadyOpen"
+	| "RemovalProposalNotFound"
+	| "RemovalProposalAlreadyExecuted"
+	| "AlreadyVotedForRemoval"
+	| "CannotVoteOnOwnRemoval"
 	// Certificate errors
 	| "InvalidCertificateId"
 	| "InvalidClaimsHash"
@@ -45,6 +51,7 @@ export type UniverifyErrorName =
 	// NFT wiring errors (Univerify ↔ CertificateNft)
 	| "NftAlreadySet"
 	| "NftNotConfigured"
+	| "NftMinterMismatch"
 	// CertificateNft errors (surface through the cross-contract call)
 	| "NotMinter"
 	| "AlreadyMinted"
@@ -53,20 +60,24 @@ export type UniverifyErrorName =
 	| "SoulboundNoApprovals";
 
 const KNOWN_ERROR_NAMES: readonly UniverifyErrorName[] = [
-	"NotOwner",
-	"ZeroAddress",
 	"NotActiveIssuer",
-	"AlreadyApplied",
-	"AlreadyActive",
-	"NotPending",
-	"AlreadySuspended",
-	"NotSuspended",
-	"AlreadyApproved",
-	"SelfApproval",
-	"InvalidApprovalThreshold",
+	"ZeroAddress",
 	"EmptyName",
 	"NameTooLong",
-	"DuplicateGenesisIssuer",
+	"IssuerAlreadyExists",
+	"IssuerNotFound",
+	"IssuerNotPending",
+	"IssuerNotActive",
+	"CannotApproveSelf",
+	"AlreadyApproved",
+	"InvalidThreshold",
+	"InvalidGenesis",
+	"CannotProposeSelfRemoval",
+	"RemovalProposalAlreadyOpen",
+	"RemovalProposalNotFound",
+	"RemovalProposalAlreadyExecuted",
+	"AlreadyVotedForRemoval",
+	"CannotVoteOnOwnRemoval",
 	"InvalidCertificateId",
 	"InvalidClaimsHash",
 	"InvalidRecipientCommitment",
@@ -77,6 +88,7 @@ const KNOWN_ERROR_NAMES: readonly UniverifyErrorName[] = [
 	"CertificateAlreadyRevoked",
 	"NftAlreadySet",
 	"NftNotConfigured",
+	"NftMinterMismatch",
 	"NotMinter",
 	"AlreadyMinted",
 	"InvalidStudent",

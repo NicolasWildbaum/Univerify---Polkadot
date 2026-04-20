@@ -1,6 +1,7 @@
 // Univerify contract ABI — federated academic credential registry.
-// Mirrors `contracts/evm/contracts/Univerify.sol` after the federated-issuer
-// refactor. Hand-maintained until a shared compiled-artifact pipeline exists.
+// Mirrors `contracts/evm/contracts/Univerify.sol` after the fully-decentralised
+// refactor (no owner, governance-based removal). Hand-maintained until a
+// shared compiled-artifact pipeline exists.
 export const univerifyAbi = [
 	// ── Governance: application & approval ─────────────────────────
 	{
@@ -21,25 +22,18 @@ export const univerifyAbi = [
 		stateMutability: "nonpayable",
 	},
 
-	// ── Governance: emergency admin (owner-only) ───────────────────
+	// ── Governance: removal proposals ──────────────────────────────
 	{
 		type: "function",
-		name: "suspendIssuer",
-		inputs: [{ name: "issuer", type: "address" }],
-		outputs: [],
+		name: "proposeRemoval",
+		inputs: [{ name: "target", type: "address" }],
+		outputs: [{ name: "proposalId", type: "uint256" }],
 		stateMutability: "nonpayable",
 	},
 	{
 		type: "function",
-		name: "unsuspendIssuer",
-		inputs: [{ name: "issuer", type: "address" }],
-		outputs: [],
-		stateMutability: "nonpayable",
-	},
-	{
-		type: "function",
-		name: "transferOwnership",
-		inputs: [{ name: "newOwner", type: "address" }],
+		name: "voteForRemoval",
+		inputs: [{ name: "proposalId", type: "uint256" }],
 		outputs: [],
 		stateMutability: "nonpayable",
 	},
@@ -150,6 +144,13 @@ export const univerifyAbi = [
 	},
 	{
 		type: "function",
+		name: "issuerEpoch",
+		inputs: [{ name: "account", type: "address" }],
+		outputs: [{ name: "", type: "uint32" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
 		name: "issuerCount",
 		inputs: [],
 		outputs: [{ name: "", type: "uint256" }],
@@ -163,17 +164,62 @@ export const univerifyAbi = [
 		stateMutability: "view",
 	},
 
-	// ── Top-level state ─────────────────────────────────────────────
+	// ── Removal-proposal reads ──────────────────────────────────────
 	{
 		type: "function",
-		name: "owner",
-		inputs: [],
-		outputs: [{ name: "", type: "address" }],
+		name: "getRemovalProposal",
+		inputs: [{ name: "proposalId", type: "uint256" }],
+		outputs: [
+			{
+				name: "",
+				type: "tuple",
+				components: [
+					{ name: "target", type: "address" },
+					{ name: "proposer", type: "address" },
+					{ name: "createdAt", type: "uint64" },
+					{ name: "voteCount", type: "uint32" },
+					{ name: "executed", type: "bool" },
+				],
+			},
+		],
 		stateMutability: "view",
 	},
 	{
 		type: "function",
+		name: "hasVotedOnRemoval",
+		inputs: [
+			{ name: "proposalId", type: "uint256" },
+			{ name: "voter", type: "address" },
+		],
+		outputs: [{ name: "", type: "bool" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
+		name: "openRemovalProposal",
+		inputs: [{ name: "target", type: "address" }],
+		outputs: [{ name: "", type: "uint256" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
+		name: "removalProposalCount",
+		inputs: [],
+		outputs: [{ name: "", type: "uint256" }],
+		stateMutability: "view",
+	},
+
+	// ── Top-level state ─────────────────────────────────────────────
+	{
+		type: "function",
 		name: "approvalThreshold",
+		inputs: [],
+		outputs: [{ name: "", type: "uint32" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
+		name: "activeIssuerCount",
 		inputs: [],
 		outputs: [{ name: "", type: "uint32" }],
 		stateMutability: "view",
@@ -187,14 +233,6 @@ export const univerifyAbi = [
 	},
 
 	// ── Events ──────────────────────────────────────────────────────
-	{
-		type: "event",
-		name: "OwnershipTransferred",
-		inputs: [
-			{ name: "previousOwner", type: "address", indexed: true },
-			{ name: "newOwner", type: "address", indexed: true },
-		],
-	},
 	{
 		type: "event",
 		name: "IssuerApplied",
@@ -220,13 +258,29 @@ export const univerifyAbi = [
 	},
 	{
 		type: "event",
-		name: "IssuerSuspended",
-		inputs: [{ name: "issuer", type: "address", indexed: true }],
+		name: "RemovalProposalCreated",
+		inputs: [
+			{ name: "proposalId", type: "uint256", indexed: true },
+			{ name: "target", type: "address", indexed: true },
+			{ name: "proposer", type: "address", indexed: true },
+		],
 	},
 	{
 		type: "event",
-		name: "IssuerUnsuspended",
-		inputs: [{ name: "issuer", type: "address", indexed: true }],
+		name: "RemovalVoteCast",
+		inputs: [
+			{ name: "proposalId", type: "uint256", indexed: true },
+			{ name: "voter", type: "address", indexed: true },
+			{ name: "voteCount", type: "uint32", indexed: false },
+		],
+	},
+	{
+		type: "event",
+		name: "IssuerRemoved",
+		inputs: [
+			{ name: "issuer", type: "address", indexed: true },
+			{ name: "proposalId", type: "uint256", indexed: true },
+		],
 	},
 	{
 		type: "event",
@@ -254,12 +308,12 @@ export const univerifyAbi = [
 
 // ── IssuerStatus mirror ─────────────────────────────────────────────
 // Numeric values must match the Solidity `enum IssuerStatus` order:
-//   None = 0, Pending = 1, Active = 2, Suspended = 3
+//   None = 0, Pending = 1, Active = 2, Removed = 3
 export const IssuerStatus = {
 	None: 0,
 	Pending: 1,
 	Active: 2,
-	Suspended: 3,
+	Removed: 3,
 } as const;
 
 export type IssuerStatusValue = (typeof IssuerStatus)[keyof typeof IssuerStatus];
@@ -272,8 +326,8 @@ export function issuerStatusLabel(status: IssuerStatusValue | number): string {
 			return "Pending";
 		case IssuerStatus.Active:
 			return "Active";
-		case IssuerStatus.Suspended:
-			return "Suspended";
+		case IssuerStatus.Removed:
+			return "Removed";
 		default:
 			return "Unknown";
 	}
