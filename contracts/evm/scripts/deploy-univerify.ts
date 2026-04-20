@@ -198,7 +198,11 @@ async function main() {
 	const nftAddress = nftReceipt.contractAddress;
 	console.log(`CertificateNft   deployed to: ${nftAddress}`);
 
-	// 3) Wire the NFT into Univerify (one-shot setter, owner-only).
+	// 3) Wire the NFT into Univerify. The one-shot setter is permissionless
+	//    and only accepts an NFT whose immutable `minter()` already points
+	//    back at this Univerify — we just deployed that NFT, so the check
+	//    passes. The deployer has no lingering authority after this call;
+	//    the registry is now fully governed by its active issuer federation.
 	const wireHash = await walletClient.writeContract({
 		address: univerifyAddress,
 		abi: univerifyArtifact.abi,
@@ -207,7 +211,7 @@ async function main() {
 	});
 	await publicClient.waitForTransactionReceipt({ hash: wireHash, timeout: 120_000 });
 	console.log(`setCertificateNft tx:        ${wireHash}`);
-	console.log(`Owner (deployer):             ${walletClient.account.address}`);
+	console.log(`Deployer (no on-chain role): ${walletClient.account.address}`);
 
 	updateDeployments(univerifyAddress, nftAddress);
 	console.log("Updated deployments.json and web/src/config/deployments.ts");
