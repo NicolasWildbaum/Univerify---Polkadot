@@ -1,15 +1,33 @@
 # Contracts
 
-This directory contains the Solidity Proof of Existence example compiled for two execution targets on the same chain.
+This directory hosts the Solidity backend. The **Univerify product contracts** live in [`evm/contracts/Univerify.sol`](evm/contracts/Univerify.sol) and [`evm/contracts/CertificateNft.sol`](evm/contracts/CertificateNft.sol); see [`../BACKEND_DESIGN.md`](../BACKEND_DESIGN.md) for the full spec.
 
-## Projects
+The `pvm/` project and the `ProofOfExistence.sol` files are **template leftovers** kept for reference — they compile but are not part of Univerify.
+
+## Univerify
+
+- Registry + federated governance (no owner): `evm/contracts/Univerify.sol`
+- Soulbound ERC-721: `evm/contracts/CertificateNft.sol`
+- Tests: `evm/test/Univerify.test.ts`, `evm/test/CertificateNft.test.ts`
+- Deploy (both + wiring, one script): `evm/scripts/deploy-univerify.ts`
+
+```bash
+cd contracts/evm
+npm install
+npx hardhat compile
+npx hardhat test
+npm run deploy:local     # local dev chain via eth-rpc
+npm run deploy:testnet   # Polkadot Hub TestNet (Paseo)
+```
+
+## Template projects (reference only)
 
 | Project | Path | Toolchain | VM backend |
 | --- | --- | --- | --- |
 | EVM | [`evm/`](evm/) | Hardhat + solc + viem | REVM |
 | PVM | [`pvm/`](pvm/) | Hardhat + `@parity/resolc` + viem | PolkaVM |
 
-Each project includes its own `ProofOfExistence.sol` entrypoint:
+Each includes its own `ProofOfExistence.sol` entrypoint:
 
 - [`evm/contracts/ProofOfExistence.sol`](evm/contracts/ProofOfExistence.sol)
 - [`pvm/contracts/ProofOfExistence.sol`](pvm/contracts/ProofOfExistence.sol)

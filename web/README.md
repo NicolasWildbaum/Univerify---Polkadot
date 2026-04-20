@@ -1,24 +1,26 @@
 # Web
 
-This directory contains the React frontend for the template.
+React frontend for **Univerify** plus the original template pages.
 
-## Overview
+## Stack
 
-The app uses:
+- React 18 + Vite + TypeScript + Tailwind.
+- [viem](https://viem.sh/) for EVM reads through `eth-rpc`.
+- `pallet_revive::call` for writes, signed by the connected Polkadot wallet (`src/account/reviveCall.ts`), so every contract write is a Substrate extrinsic.
+- Every write is pre-flighted with `publicClient.simulateContract` so custom-error names (`CannotProposeSelfRemoval`, `IssuerAlreadyExists`, ...) surface instead of the opaque `Revive.ContractReverted`.
+- [PAPI](https://papi.how/) for pallet-side reads.
+- Zustand for state.
 
-- React + Vite + TypeScript + Tailwind CSS
-- [Polkadot API (PAPI)](https://papi.how/) for pallet interaction
-- [viem](https://viem.sh/) for EVM and PVM contract interaction through `eth-rpc`
-- Zustand for state management
+## Univerify pages
 
-Key pages include:
+- `src/pages/GovernancePage.tsx` — apply / re-apply (Removed → Pending via new `issuerEpoch`), approve, propose removal, vote. Accepts both SS58 and 0x addresses and converts to H160 internally.
+- `src/pages/UniverifyIssuerPage.tsx` — issue / revoke certificates.
+- `src/pages/PublicVerifyPage.tsx` — presentation-based verification.
+- `src/pages/MyCertificatesPage.tsx` — student view via soulbound NFT enumeration.
+- `src/config/univerify.ts` — ABI + `IssuerStatus` mirror (must stay in sync with the contract).
+- `src/utils/contractErrors.ts` — custom-error parser and user-facing hints.
 
-- Home
-- Pallet Proof of Existence
-- EVM Proof of Existence
-- PVM Proof of Existence
-- Statements
-- Accounts
+Template pages (Home, Pallet / EVM / PVM Proof of Existence, Statements, Accounts) remain available for reference.
 
 ## Local Development
 
