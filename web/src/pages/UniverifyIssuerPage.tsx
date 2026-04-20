@@ -26,6 +26,7 @@ import {
 	type VerifiableCredential,
 } from "../utils/credential";
 import { extractRevertName } from "../utils/contractErrors";
+import { MonthYearPicker } from "../components/MonthYearPicker";
 
 const STORAGE_KEY_PREFIX = "univerify:address";
 
@@ -223,6 +224,11 @@ export default function UniverifyIssuerPage() {
 	const studentInputLooksLikeSs58 =
 		trimmedStudent.length > 0 && !trimmedStudent.startsWith("0x");
 
+	// `buildCredential` runs `normalizeClaims` internally, which throws on an
+	// invalid `issuanceDate`. `MonthYearPicker` can emit partial sentinels
+	// (`"--MM"` / `"YYYY-"`) while the user is still filling both dropdowns,
+	// so the try/catch catches those and hides the preview until both month
+	// and year are selected.
 	const preview = useMemo(() => {
 		if (!issuerAddress) return null;
 		const ready =
@@ -235,18 +241,22 @@ export default function UniverifyIssuerPage() {
 
 		if (!ready) return null;
 
-		return buildCredential({
-			issuer: issuerAddress,
-			internalRef: internalRef.trim(),
-			claims: {
-				degreeTitle: claims.degreeTitle.trim(),
-				holderName: claims.holderName.trim(),
-				institutionName: claims.institutionName.trim(),
-				issuanceDate: claims.issuanceDate.trim(),
-			},
-			secret,
-			holderIdentifier: holderIdentifier.trim(),
-		});
+		try {
+			return buildCredential({
+				issuer: issuerAddress,
+				internalRef: internalRef.trim(),
+				claims: {
+					degreeTitle: claims.degreeTitle,
+					holderName: claims.holderName,
+					institutionName: claims.institutionName,
+					issuanceDate: claims.issuanceDate,
+				},
+				secret,
+				holderIdentifier: holderIdentifier.trim(),
+			});
+		} catch {
+			return null;
+		}
 	}, [claims, internalRef, holderIdentifier, secret, issuerAddress]);
 
 	const busy = tx.kind === "sending" || revokeTx.kind === "sending";
@@ -543,11 +553,11 @@ export default function UniverifyIssuerPage() {
 								placeholder="Universidad de Buenos Aires"
 								onChange={(v) => setClaims((c) => ({ ...c, institutionName: v }))}
 							/>
-							<ClaimInput
-								label="Issuance Date (ISO)"
+							<MonthYearPicker
+								label="Issuance Month"
 								value={claims.issuanceDate}
-								placeholder="2026-03-15"
 								onChange={(v) => setClaims((c) => ({ ...c, issuanceDate: v }))}
+								helpText="Stored as YYYY-MM. Day is intentionally not part of the hash."
 							/>
 						</div>
 					</div>
@@ -670,13 +680,19 @@ export default function UniverifyIssuerPage() {
 					<div className="card space-y-4">
 						<h2 className="section-title">Computed Values</h2>
 						{preview ? (
-							<div className="space-y-3">
-								<HashField label="Certificate ID" value={preview.certificateId} />
-								<HashField label="Claims Hash" value={preview.claimsHash} />
-								<HashField
-									label="Recipient Commitment"
-									value={preview.recipientCommitment}
-								/>
+							<div className="space-y-4">
+								<div className="space-y-3">
+									<HashField
+										label="Certificate ID"
+										value={preview.certificateId}
+									/>
+									<HashField label="Claims Hash" value={preview.claimsHash} />
+									<HashField
+										label="Recipient Commitment"
+										value={preview.recipientCommitment}
+									/>
+								</div>
+								<CanonicalClaimsPanel claims={preview.credential.claims} />
 							</div>
 						) : (
 							<p className="text-sm text-text-muted">
@@ -993,6 +1009,41 @@ function ClaimInput({
 				placeholder={placeholder}
 				className="input-field w-full"
 			/>
+		</div>
+	);
+}
+
+/// Read-only mirror of `normalizeClaims(claims)` — the exact strings that
+/// were fed into `keccak256(abi.encode(...))`. The issuer uses this to know
+/// what the verifier needs to type to reproduce the same `claimsHash`.
+function CanonicalClaimsPanel({ claims }: { claims: CredentialClaims }) {
+	return (
+		<div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 space-y-2">
+			<div>
+				<p className="text-xs font-medium text-text-tertiary uppercase tracking-wider">
+					Canonical form (used for hashing)
+				</p>
+				<p className="text-xs text-text-muted mt-1">
+					Strings are upper-cased, NFC-normalized and whitespace-collapsed before
+					hashing. Anyone re-typing these exact values reproduces the same{" "}
+					<code>claimsHash</code> regardless of casing.
+				</p>
+			</div>
+			<dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs font-mono text-text-primary">
+				<CanonicalRow label="degreeTitle" value={claims.degreeTitle} />
+				<CanonicalRow label="holderName" value={claims.holderName} />
+				<CanonicalRow label="institutionName" value={claims.institutionName} />
+				<CanonicalRow label="issuanceDate" value={claims.issuanceDate} />
+			</dl>
+		</div>
+	);
+}
+
+function CanonicalRow({ label, value }: { label: string; value: string }) {
+	return (
+		<div>
+			<dt className="text-text-tertiary">{label}</dt>
+			<dd className="break-all text-text-primary">{value}</dd>
 		</div>
 	);
 }
