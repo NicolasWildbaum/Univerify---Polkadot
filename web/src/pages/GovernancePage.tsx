@@ -2,15 +2,25 @@
 //
 // Architecture notes:
 //   - The connected Polkadot wallet (see `account/wallet.ts`) is the sole
-//     source of identity. The old manual "Caller account" selector is gone.
+//     source of identity. The registry has no privileged owner.
 //   - Contract reads use viem; writes are Substrate extrinsics routed through
 //     `pallet_revive::call` via `submitReviveCall`, so the injected wallet's
 //     signer can drive them.
-//   - Permission gating (owner / active issuer) comes exclusively from
-//     on-chain reads (`owner`, `getIssuer`); no frontend-only heuristics.
+//   - Permission gating ("active issuer?") comes exclusively from on-chain
+//     reads (`getIssuer`); no frontend-only heuristics.
+//
+// Governance surface rendered by this page:
+//   - Apply to join the federation (public, opens a pending waitlist entry)
+//   - Approve a pending applicant (active issuers only)
+//   - Propose to remove an active issuer (active issuers only, not self)
+//   - Vote on an open removal proposal (active issuers only, not the target)
+//
+// All "admin / emergency" flows from the old owner-based model are gone on
+// purpose — removal is driven purely by active-issuer votes.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Address, Hex } from "viem";
+import { type Address, type Hex, isAddress } from "viem";
+import { getSs58AddressInfo } from "@polkadot-api/substrate-bindings";
 import { univerifyAbi, IssuerStatus, issuerStatusLabel } from "../config/univerify";
 import { deployments } from "../config/deployments";
 import { getPublicClient } from "../config/evm";
@@ -19,12 +29,14 @@ import {
 	useWalletStore,
 	selectConnectedEvmAddress,
 	selectConnectedSigner,
+	ss58ToEvmAddress,
 } from "../account/wallet";
 import { submitReviveCall } from "../account/reviveCall";
 import { extractRevertName, type UniverifyErrorName } from "../utils/contractErrors";
 
 const STORAGE_KEY_PREFIX = "univerify:governance:address";
 const ZERO_BYTES32: Hex = "0x0000000000000000000000000000000000000000000000000000000000000000";
+const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000";
 
 // ── On-chain projection ─────────────────────────────────────────────
 
@@ -37,13 +49,26 @@ interface IssuerView {
 	approvalCount: number;
 }
 
+interface RemovalProposalView {
+	proposalId: bigint;
+	target: Address;
+	proposer: Address;
+	createdAt: bigint;
+	voteCount: number;
+	executed: boolean;
+	/** Addresses (lowercased) that have voted on this proposal. */
+	voters: Set<string>;
+}
+
 interface RegistryView {
-	owner: Address;
 	approvalThreshold: number;
+	activeIssuerCount: number;
 	maxNameLength: bigint;
 	issuers: IssuerView[];
 	/** Map of `${candidate.toLowerCase()}` → set of approver addresses (lowercased). */
 	approvals: Map<string, Set<string>>;
+	/** Open removal proposals (not yet executed), keyed by proposalId. */
+	openProposals: RemovalProposalView[];
 }
 
 type LoadState =
@@ -83,9 +108,8 @@ export default function GovernancePage() {
 	const [applyName, setApplyName] = useState("");
 	const [applyMetadataHash, setApplyMetadataHash] = useState<Hex>(ZERO_BYTES32);
 
-	// Owner-only emergency form
-	const [adminTarget, setAdminTarget] = useState<string>("");
-	const [transferTarget, setTransferTarget] = useState<string>("");
+	// Propose-removal form
+	const [proposeTarget, setProposeTarget] = useState<string>("");
 
 	function saveAddress(address: string) {
 		setContractAddress(address);
@@ -148,6 +172,33 @@ export default function GovernancePage() {
 					});
 					return;
 				}
+
+				// Pre-flight simulation via eth-rpc. viem's `simulateContract`
+				// runs the call as a read against the connected node and, on
+				// revert, returns a `ContractFunctionRevertedError` whose
+				// `errorName` has already been decoded against our ABI — that
+				// is the 4-byte custom-error name (e.g. `IssuerAlreadyExists`,
+				// `CannotProposeSelfRemoval`) we otherwise lose on the
+				// Substrate-side `Revive.ContractReverted` wrapping.
+				//
+				// Failing here means we skip the wallet prompt entirely and
+				// show a precise, actionable error. Unlike `eth_estimateGas`
+				// this path does not need any gas headroom from the user and
+				// is idempotent — it is purely a read.
+				try {
+					await publicClient.simulateContract({
+						address: addr,
+						abi: univerifyAbi,
+						functionName: functionName as "applyAsIssuer",
+						args: args as never,
+						account: callerAddress,
+					});
+				} catch (simErr) {
+					console.error(`${label} simulation reverted:`, simErr);
+					setTx({ kind: "error", message: friendlyError(label, simErr) });
+					return;
+				}
+
 				const result = await submitReviveCall({
 					wsUrl,
 					signer,
@@ -180,31 +231,34 @@ export default function GovernancePage() {
 		await runTx(`Approve ${shortAddr(candidate)}`, "approveIssuer", [candidate]);
 	}
 
-	async function handleSuspend() {
-		const target = parseAddress(adminTarget);
-		if (!target) {
-			setTx({ kind: "error", message: "Enter a valid issuer address to suspend." });
+	async function handleProposeRemoval() {
+		// The button is gated on `proposeRemovalValidation.kind === "valid"`,
+		// but we re-check here so a rogue click (disabled bypass, stale memo,
+		// …) still surfaces a readable error instead of an uncaught throw.
+		// Whatever reason the memo flagged, show it verbatim — no wallet
+		// round-trip needed.
+		const v = proposeRemovalValidation;
+		if (v.kind === "invalid") {
+			setTx({ kind: "error", message: v.message });
 			return;
 		}
-		await runTx(`Suspend ${shortAddr(target)}`, "suspendIssuer", [target]);
+		if (v.kind === "empty") {
+			setTx({
+				kind: "error",
+				message: "Enter a target address (EVM 0x... or SS58) to propose for removal.",
+			});
+			return;
+		}
+		const target = v.target;
+		await runTx(`Propose removal of ${shortAddr(target)}`, "proposeRemoval", [target]);
 	}
 
-	async function handleUnsuspend() {
-		const target = parseAddress(adminTarget);
-		if (!target) {
-			setTx({ kind: "error", message: "Enter a valid issuer address to unsuspend." });
-			return;
-		}
-		await runTx(`Unsuspend ${shortAddr(target)}`, "unsuspendIssuer", [target]);
-	}
-
-	async function handleTransferOwnership() {
-		const target = parseAddress(transferTarget);
-		if (!target) {
-			setTx({ kind: "error", message: "Enter a valid new owner address." });
-			return;
-		}
-		await runTx(`Transfer ownership → ${shortAddr(target)}`, "transferOwnership", [target]);
+	async function handleVoteForRemoval(proposalId: bigint, target: Address) {
+		await runTx(
+			`Vote to remove ${shortAddr(target)}`,
+			"voteForRemoval",
+			[proposalId],
+		);
 	}
 
 	// ── Derived view-model ───────────────────────────────────────────
@@ -216,17 +270,87 @@ export default function GovernancePage() {
 		return data.issuers.find((i) => i.account.toLowerCase() === callerKey) ?? null;
 	}, [data, callerKey]);
 
-	const isOwner = !!data && !!callerKey && data.owner.toLowerCase() === callerKey;
-	const callerCanApprove = callerIssuer?.status === IssuerStatus.Active;
+	const callerIsActive = callerIssuer?.status === IssuerStatus.Active;
+	// Pending or Active callers cannot (and need not) apply again. A `Removed`
+	// caller *can* re-apply: the contract allows the Removed → Pending
+	// transition, bumping an internal approval epoch so previous-round
+	// approvals do not carry over. The UI surfaces that as an unlocked Apply
+	// button with a short "you can re-apply" helper next to the status.
 	const callerHasApplied =
 		!!callerIssuer &&
 		(callerIssuer.status === IssuerStatus.Pending ||
-			callerIssuer.status === IssuerStatus.Active ||
-			callerIssuer.status === IssuerStatus.Suspended);
+			callerIssuer.status === IssuerStatus.Active);
+	const callerCanReapply = callerIssuer?.status === IssuerStatus.Removed;
 
 	const activeIssuers = data?.issuers.filter((i) => i.status === IssuerStatus.Active) ?? [];
 	const pendingIssuers = data?.issuers.filter((i) => i.status === IssuerStatus.Pending) ?? [];
-	const suspendedIssuers = data?.issuers.filter((i) => i.status === IssuerStatus.Suspended) ?? [];
+	const removedIssuers = data?.issuers.filter((i) => i.status === IssuerStatus.Removed) ?? [];
+	const openProposals = data?.openProposals ?? [];
+
+	// Parse the propose-removal input (accepts SS58 or 0x) once per render.
+	// We keep the resolved H160 and the raw validation result around so we
+	// can (a) show a live preview of "this is the EVM address I'll submit",
+	// (b) surface precise, actionable error messages before the user even
+	// signs, and (c) gray out the button with an accurate tooltip/label.
+	//
+	// Doing this upfront is also our only path to a clear self-removal
+	// error: pallet-revive delivers contract reverts as the opaque
+	// `Revive.ContractReverted` dispatch error, which drops the 4-byte
+	// selector. `CannotProposeSelfRemoval` would never reach us as a
+	// decoded name, so we catch it client-side.
+	const proposeRemovalValidation = useMemo<
+		| { kind: "empty" }
+		| { kind: "invalid"; message: string }
+		| { kind: "valid"; target: Address }
+	>(() => {
+		const raw = proposeTarget.trim();
+		if (!raw) return { kind: "empty" };
+		const target = resolveAddress(raw);
+		if (!target) {
+			return {
+				kind: "invalid",
+				message:
+					"Enter a valid address to propose for removal. Accepts an EVM address (0x...) or a Polkadot SS58 address.",
+			};
+		}
+		if (callerKey && target.toLowerCase() === callerKey) {
+			return {
+				kind: "invalid",
+				message:
+					"You cannot propose your own removal. To exit the federation, ask other active issuers to propose removing you.",
+			};
+		}
+		if (data) {
+			const targetIssuer = data.issuers.find(
+				(i) => i.account.toLowerCase() === target.toLowerCase(),
+			);
+			if (!targetIssuer) {
+				return {
+					kind: "invalid",
+					message: "No issuer found at that address on this registry.",
+				};
+			}
+			if (targetIssuer.status !== IssuerStatus.Active) {
+				return {
+					kind: "invalid",
+					message: `That issuer is ${issuerStatusLabel(targetIssuer.status)}, not Active. Only Active issuers can be removed by governance.`,
+				};
+			}
+			if (data.openProposals.some((p) => p.target.toLowerCase() === target.toLowerCase())) {
+				return {
+					kind: "invalid",
+					message:
+						"A removal proposal for this issuer is already open. Vote on the existing proposal below instead of creating a duplicate.",
+				};
+			}
+		}
+		return { kind: "valid", target };
+	}, [proposeTarget, callerKey, data]);
+
+	const proposeRemovalResolvedAddress =
+		proposeRemovalValidation.kind === "valid" ? proposeRemovalValidation.target : null;
+	const proposeRemovalInputLooksLikeSs58 =
+		proposeTarget.trim().length > 0 && !proposeTarget.trim().startsWith("0x");
 
 	const txDisabled = !isWalletConnected || tx.kind === "sending";
 
@@ -237,7 +361,8 @@ export default function GovernancePage() {
 				<h1 className="page-title text-polka-500">Governance</h1>
 				<p className="text-text-secondary">
 					Federated registry of university issuers. Active universities collectively
-					approve new applicants. The contract owner only retains emergency powers.
+					approve new applicants and decide — by vote — whether to remove existing
+					members. There is no privileged owner or emergency admin.
 				</p>
 			</div>
 
@@ -275,7 +400,6 @@ export default function GovernancePage() {
 					data={data}
 					callerAddress={callerAddress}
 					callerIssuer={callerIssuer}
-					isOwner={isOwner}
 					isWalletConnected={isWalletConnected}
 				/>
 			</div>
@@ -323,7 +447,7 @@ export default function GovernancePage() {
 								callerKey !== null && i.account.toLowerCase() === callerKey;
 							const disabled =
 								txDisabled ||
-								!callerCanApprove ||
+								!callerIsActive ||
 								callerAlreadyApproved ||
 								callerIsCandidate;
 							return (
@@ -356,7 +480,7 @@ export default function GovernancePage() {
 												You cannot approve yourself
 											</span>
 										)}
-										{isWalletConnected && !callerCanApprove && (
+										{isWalletConnected && !callerIsActive && (
 											<span className="text-xs text-text-tertiary">
 												Only Active issuers can approve
 											</span>
@@ -371,11 +495,27 @@ export default function GovernancePage() {
 
 			{/* Apply form */}
 			<div className="card space-y-3">
-				<h2 className="section-title">Apply as issuer</h2>
+				<h2 className="section-title">
+					{callerCanReapply ? "Re-apply as issuer" : "Apply as issuer"}
+				</h2>
 				<p className="text-text-secondary text-sm">
-					Submit an application from the connected wallet account. After{" "}
-					<strong>{data?.approvalThreshold ?? "N"}</strong> approvals from existing Active
-					universities, the application becomes Active automatically.
+					{callerCanReapply ? (
+						<>
+							This account was removed from the registry by a federated
+							governance vote. It can re-apply to re-enter the waitlist. After{" "}
+							<strong>{data?.approvalThreshold ?? "N"}</strong> fresh approvals
+							from existing Active universities, it becomes Active again
+							automatically — previous-round approvals do <em>not</em> carry
+							over.
+						</>
+					) : (
+						<>
+							Submit an application from the connected wallet account. After{" "}
+							<strong>{data?.approvalThreshold ?? "N"}</strong> approvals from
+							existing Active universities, the application becomes Active
+							automatically.
+						</>
+					)}
 				</p>
 				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 					<div>
@@ -415,7 +555,9 @@ export default function GovernancePage() {
 					>
 						{tx.kind === "sending" && tx.label === "Apply"
 							? "Signing..."
-							: "Apply as issuer"}
+							: callerCanReapply
+								? "Re-apply as issuer"
+								: "Apply as issuer"}
 					</button>
 					{!isWalletConnected && (
 						<span className="text-xs text-text-tertiary">
@@ -435,81 +577,182 @@ export default function GovernancePage() {
 			{/* Tx feedback */}
 			<TxBanner tx={tx} />
 
-			{/* Suspended (informational) */}
-			{suspendedIssuers.length > 0 && (
+			{/* Removal governance */}
+			<div className="card space-y-4 border border-accent-red/20">
+				<div>
+					<h2 className="section-title text-accent-red">Remove an issuer (governance)</h2>
+					<p className="text-xs text-text-muted mt-1">
+						Active issuers can propose the removal of another active issuer. The
+						proposal executes automatically once {data?.approvalThreshold ?? "N"}{" "}
+						active issuers (including the proposer) have voted in favour. There is
+						no other path to remove an issuer — no owner, no admin.
+					</p>
+				</div>
+
+				<div>
+					<label className="label">Target issuer address</label>
+					<input
+						type="text"
+						value={proposeTarget}
+						onChange={(e) => setProposeTarget(e.target.value)}
+						placeholder="0x... or SS58 (e.g. 5F...)"
+						className="input-field w-full"
+						spellCheck={false}
+					/>
+					<p className="text-xs text-text-muted mt-1">
+						Accepts an EVM address (0x...) or a Polkadot SS58 address — they're
+						converted to the same on-chain H160 via{" "}
+						<code>pallet_revive::AccountId32Mapper</code>.
+					</p>
+					{proposeRemovalInputLooksLikeSs58 && proposeRemovalResolvedAddress && (
+						<p className="text-xs text-text-tertiary mt-1">
+							Resolved to EVM address:{" "}
+							<code className="font-mono">{proposeRemovalResolvedAddress}</code>
+						</p>
+					)}
+					{proposeRemovalValidation.kind === "invalid" && (
+						<p className="text-xs text-accent-red mt-2">
+							{proposeRemovalValidation.message}
+						</p>
+					)}
+					<div className="mt-2 flex flex-wrap items-center gap-3">
+						<button
+							onClick={handleProposeRemoval}
+							disabled={
+								txDisabled ||
+								!callerIsActive ||
+								proposeRemovalValidation.kind !== "valid"
+							}
+							className="btn-primary text-xs"
+						>
+							{tx.kind === "sending" && tx.label.startsWith("Propose removal")
+								? "Signing..."
+								: "Propose removal"}
+						</button>
+						{!callerIsActive && isWalletConnected && (
+							<span className="text-xs text-text-tertiary">
+								Only Active issuers can propose removals.
+							</span>
+						)}
+					</div>
+				</div>
+
+				<div className="space-y-3">
+					<h3 className="text-sm font-medium text-text-primary">
+						Open removal proposals
+					</h3>
+					{!data ? (
+						<p className="text-sm text-text-muted">Connect to a contract to load.</p>
+					) : openProposals.length === 0 ? (
+						<p className="text-sm text-text-muted">No open removal proposals.</p>
+					) : (
+						<ul className="space-y-3">
+							{openProposals.map((p) => {
+								const callerVoted =
+									callerKey !== null && p.voters.has(callerKey);
+								const callerIsTarget =
+									callerKey !== null && p.target.toLowerCase() === callerKey;
+								const voteDisabled =
+									txDisabled ||
+									!callerIsActive ||
+									callerVoted ||
+									callerIsTarget;
+								const targetIssuer = data.issuers.find(
+									(i) =>
+										i.account.toLowerCase() === p.target.toLowerCase(),
+								);
+								return (
+									<li
+										key={p.proposalId.toString()}
+										className="rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 space-y-2"
+									>
+										<div className="flex items-center justify-between gap-3 flex-wrap">
+											<div className="min-w-0">
+												<div className="text-sm font-medium text-text-primary truncate">
+													Remove {targetIssuer?.name || "(unnamed)"}
+												</div>
+												<code className="text-xs text-text-tertiary font-mono break-all">
+													{p.target}
+												</code>
+											</div>
+											<span className="status-badge border bg-accent-red/10 text-accent-red border-accent-red/30">
+												Proposal #{p.proposalId.toString()}
+											</span>
+										</div>
+										<div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-text-muted">
+											<div>
+												Proposed by{" "}
+												<code className="font-mono text-text-secondary">
+													{shortAddr(p.proposer)}
+												</code>
+											</div>
+											<div>
+												Votes: <strong>{p.voteCount}</strong> /{" "}
+												{data.approvalThreshold}
+											</div>
+											<div>
+												Created{" "}
+												{new Date(
+													Number(p.createdAt) * 1000,
+												).toLocaleString()}
+											</div>
+										</div>
+										<div className="flex flex-wrap items-center gap-3">
+											<button
+												onClick={() =>
+													handleVoteForRemoval(p.proposalId, p.target)
+												}
+												disabled={voteDisabled}
+												className="btn-primary text-xs"
+											>
+												{tx.kind === "sending" &&
+												tx.label ===
+													`Vote to remove ${shortAddr(p.target)}`
+													? "Signing..."
+													: "Vote to remove"}
+											</button>
+											{callerVoted && (
+												<span className="text-xs text-text-tertiary">
+													You already voted
+												</span>
+											)}
+											{callerIsTarget && (
+												<span className="text-xs text-text-tertiary">
+													You cannot vote on your own removal
+												</span>
+											)}
+											{isWalletConnected && !callerIsActive && (
+												<span className="text-xs text-text-tertiary">
+													Only Active issuers can vote
+												</span>
+											)}
+										</div>
+									</li>
+								);
+							})}
+						</ul>
+					)}
+				</div>
+			</div>
+
+			{/* Removed (informational) */}
+			{removedIssuers.length > 0 && (
 				<div className="card space-y-3">
-					<h2 className="section-title text-accent-red">Suspended</h2>
+					<h2 className="section-title text-accent-red">Removed (by governance)</h2>
+					<p className="text-xs text-text-muted">
+						These universities were removed by federated vote. While Removed, they
+						cannot issue, revoke, approve, or participate in governance, but they
+						may re-apply at any time to re-enter the waitlist — they'll need a
+						fresh round of approvals to become Active again. Historical
+						certificates they previously issued remain verifiable on-chain.
+					</p>
 					<ul className="space-y-2">
-						{suspendedIssuers.map((i) => (
+						{removedIssuers.map((i) => (
 							<IssuerRow key={i.account} issuer={i} />
 						))}
 					</ul>
 				</div>
 			)}
-
-			{/* Owner-only emergency admin */}
-			<div
-				className={`card space-y-4 border ${
-					isOwner ? "border-accent-orange/30" : "border-white/[0.06]"
-				}`}
-			>
-				<div className="flex items-center justify-between gap-3 flex-wrap">
-					<div>
-						<h2 className="section-title text-accent-orange">Emergency admin</h2>
-						<p className="text-xs text-text-muted mt-1">
-							Owner-only. The federated approval flow above is the normal path — this
-							section exists for emergency intervention.
-						</p>
-					</div>
-					{isOwner ? (
-						<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
-							Owner controls unlocked
-						</span>
-					) : (
-						<span className="status-badge border bg-white/[0.04] text-text-muted border-white/[0.08]">
-							Read-only — connected account is not owner
-						</span>
-					)}
-				</div>
-
-				<fieldset disabled={!isOwner || txDisabled} className="space-y-4">
-					<div>
-						<label className="label">Issuer address (suspend / unsuspend)</label>
-						<input
-							type="text"
-							value={adminTarget}
-							onChange={(e) => setAdminTarget(e.target.value)}
-							placeholder="0x..."
-							className="input-field w-full"
-						/>
-						<div className="mt-2 flex gap-2 flex-wrap">
-							<button onClick={handleSuspend} className="btn-primary text-xs">
-								Suspend
-							</button>
-							<button onClick={handleUnsuspend} className="btn-secondary text-xs">
-								Unsuspend
-							</button>
-						</div>
-					</div>
-
-					<div>
-						<label className="label">Transfer ownership</label>
-						<input
-							type="text"
-							value={transferTarget}
-							onChange={(e) => setTransferTarget(e.target.value)}
-							placeholder="0x..."
-							className="input-field w-full"
-						/>
-						<button
-							onClick={handleTransferOwnership}
-							className="btn-primary text-xs mt-2"
-						>
-							Transfer ownership
-						</button>
-					</div>
-				</fieldset>
-			</div>
 		</div>
 	);
 }
@@ -529,8 +772,8 @@ function RegistryHeader({ load }: { load: LoadState }) {
 	const d = load.data;
 	return (
 		<div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-			<Stat label="Owner" value={shortAddr(d.owner)} mono />
 			<Stat label="Approval threshold" value={String(d.approvalThreshold)} />
+			<Stat label="Active issuers" value={String(d.activeIssuerCount)} />
 			<Stat label="Total issuers" value={String(d.issuers.length)} />
 		</div>
 	);
@@ -540,13 +783,11 @@ function CallerPanel({
 	data,
 	callerAddress,
 	callerIssuer,
-	isOwner,
 	isWalletConnected,
 }: {
 	data: RegistryView | null;
 	callerAddress: Address | null;
 	callerIssuer: IssuerView | null;
-	isOwner: boolean;
 	isWalletConnected: boolean;
 }) {
 	if (!isWalletConnected || !callerAddress) {
@@ -573,14 +814,14 @@ function CallerPanel({
 			</div>
 			<div className="flex items-center gap-2 flex-wrap">
 				<StatusBadge status={status} />
-				{isOwner && (
-					<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
-						★ Owner
-					</span>
-				)}
 				{data && callerIssuer?.status === IssuerStatus.Pending && (
 					<span className="text-xs text-text-tertiary">
 						{callerIssuer.approvalCount} / {data.approvalThreshold} approvals collected
+					</span>
+				)}
+				{callerIssuer?.status === IssuerStatus.Removed && (
+					<span className="text-xs text-text-tertiary">
+						You can re-apply below — previous-round approvals won't carry over.
 					</span>
 				)}
 			</div>
@@ -612,7 +853,7 @@ function StatusBadge({ status }: { status: number }) {
 			? "bg-accent-green/10 text-accent-green border-accent-green/30"
 			: status === IssuerStatus.Pending
 				? "bg-accent-orange/10 text-accent-orange border-accent-orange/30"
-				: status === IssuerStatus.Suspended
+				: status === IssuerStatus.Removed
 					? "bg-accent-red/10 text-accent-red border-accent-red/30"
 					: "bg-white/[0.04] text-text-muted border-white/[0.08]";
 	return <span className={`status-badge border ${cls}`}>{issuerStatusLabel(status)}</span>;
@@ -656,16 +897,16 @@ function TxBanner({ tx }: { tx: TxState }) {
 type ReadClient = ReturnType<typeof getPublicClient>;
 
 async function loadRegistry(client: ReadClient, address: Address): Promise<RegistryView> {
-	const [owner, threshold, maxName, count] = await Promise.all([
-		client.readContract({
-			address,
-			abi: univerifyAbi,
-			functionName: "owner",
-		}),
+	const [threshold, activeCount, maxName, count, proposalCount] = await Promise.all([
 		client.readContract({
 			address,
 			abi: univerifyAbi,
 			functionName: "approvalThreshold",
+		}),
+		client.readContract({
+			address,
+			abi: univerifyAbi,
+			functionName: "activeIssuerCount",
 		}),
 		client.readContract({
 			address,
@@ -676,6 +917,11 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 			address,
 			abi: univerifyAbi,
 			functionName: "issuerCount",
+		}),
+		client.readContract({
+			address,
+			abi: univerifyAbi,
+			functionName: "removalProposalCount",
 		}),
 	]);
 
@@ -741,12 +987,66 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 		approvals.set(candidate.account.toLowerCase(), set);
 	}
 
+	// Iterate all proposals (1..removalProposalCount), keep open ones. MVP
+	// scale: a linear scan is fine since proposals are rare events in a
+	// federation. Larger deployments should read proposals via event logs.
+	const proposalTotal = Number(proposalCount as bigint);
+	const proposalIds = Array.from({ length: proposalTotal }, (_, i) => BigInt(i + 1));
+	const proposalStructs = (await Promise.all(
+		proposalIds.map((id) =>
+			client.readContract({
+				address,
+				abi: univerifyAbi,
+				functionName: "getRemovalProposal",
+				args: [id],
+			}),
+		),
+	)) as Array<{
+		target: Address;
+		proposer: Address;
+		createdAt: bigint;
+		voteCount: number | bigint;
+		executed: boolean;
+	}>;
+
+	const openProposals: RemovalProposalView[] = [];
+	for (let i = 0; i < proposalStructs.length; i++) {
+		const p = proposalStructs[i];
+		if (p.target === ZERO_ADDRESS || p.executed) continue;
+		const proposalId = proposalIds[i];
+		// Per-proposal voter lookup (one `hasVotedOnRemoval` call per active issuer).
+		const voteFlags = (await Promise.all(
+			active.map((a) =>
+				client.readContract({
+					address,
+					abi: univerifyAbi,
+					functionName: "hasVotedOnRemoval",
+					args: [proposalId, a.account],
+				}),
+			),
+		)) as boolean[];
+		const voters = new Set<string>();
+		voteFlags.forEach((v, idx) => {
+			if (v) voters.add(active[idx].account.toLowerCase());
+		});
+		openProposals.push({
+			proposalId,
+			target: p.target,
+			proposer: p.proposer,
+			createdAt: p.createdAt,
+			voteCount: Number(p.voteCount),
+			executed: p.executed,
+			voters,
+		});
+	}
+
 	return {
-		owner: owner as Address,
 		approvalThreshold: Number(threshold as number | bigint),
+		activeIssuerCount: Number(activeCount as number | bigint),
 		maxNameLength: maxName as bigint,
 		issuers,
 		approvals,
+		openProposals,
 	};
 }
 
@@ -760,24 +1060,44 @@ function friendlyError(label: string, err: unknown): string {
 
 function errorHint(name: UniverifyErrorName): string | null {
 	switch (name) {
-		case "NotOwner":
-			return "Caller is not the contract owner.";
 		case "NotActiveIssuer":
 			return "Only Active issuers can perform this action.";
-		case "AlreadyApplied":
-			return "This account has already applied or is already registered.";
-		case "AlreadyActive":
-			return "This issuer is already Active.";
-		case "NotPending":
+		case "IssuerAlreadyExists":
+			// Two reasons this can fire on `applyAsIssuer` post-refactor:
+			//   (1) the caller is already Pending or Active; or
+			//   (2) the **deployed** contract predates re-application
+			//       support and still treats Removed as terminal.
+			// We can't distinguish from the revert selector alone, so we
+			// surface both possibilities — users on a stale deployment see
+			// an actionable hint instead of a silent failure.
+			return (
+				"This account is already Pending or Active on this registry — nothing to apply. " +
+				"If you were removed by governance and still see this, the deployed Univerify " +
+				"contract is an older build that does not support re-application; redeploy and " +
+				"update `web/src/config/deployments.ts`."
+			);
+		case "IssuerNotPending":
 			return "Target issuer is not Pending.";
-		case "AlreadySuspended":
-			return "Issuer is already suspended.";
-		case "NotSuspended":
-			return "Issuer is not suspended.";
+		case "IssuerNotActive":
+			return "Target issuer is not currently Active.";
+		case "IssuerNotFound":
+			return "No issuer found at that address.";
 		case "AlreadyApproved":
 			return "You have already approved this candidate.";
-		case "SelfApproval":
+		case "CannotApproveSelf":
 			return "You cannot approve yourself.";
+		case "CannotProposeSelfRemoval":
+			return "You cannot propose your own removal.";
+		case "RemovalProposalAlreadyOpen":
+			return "There is already an open removal proposal for this issuer.";
+		case "RemovalProposalNotFound":
+			return "That removal proposal does not exist.";
+		case "RemovalProposalAlreadyExecuted":
+			return "That removal proposal has already been executed.";
+		case "AlreadyVotedForRemoval":
+			return "You have already voted on this removal proposal.";
+		case "CannotVoteOnOwnRemoval":
+			return "The target of a removal proposal cannot vote on their own removal.";
 		case "EmptyName":
 			return "Name cannot be empty.";
 		case "NameTooLong":
@@ -789,10 +1109,24 @@ function errorHint(name: UniverifyErrorName): string | null {
 	}
 }
 
-function parseAddress(raw: string): Address | null {
+// Accepts either a 20-byte H160 (0x-prefixed hex) or an SS58-encoded
+// AccountId32, and normalises both to the H160 that `pallet-revive` will see
+// as the caller/target on-chain. This mirrors the student-wallet-address
+// handling in UniverifyIssuerPage so issuers can paste whichever format
+// their Polkadot wallet happens to display.
+//
+// Returning `null` signals "not a recognisable address" (wrong length, bad
+// checksum, bad hex, etc.) — call sites should treat that as a validation
+// error rather than silently fall through.
+function resolveAddress(raw: string): Address | null {
 	const trimmed = raw.trim();
-	if (!/^0x[0-9a-fA-F]{40}$/.test(trimmed)) return null;
-	return trimmed as Address;
+	if (!trimmed) return null;
+	if (trimmed.startsWith("0x")) {
+		return isAddress(trimmed, { strict: false }) ? (trimmed as Address) : null;
+	}
+	const info = getSs58AddressInfo(trimmed);
+	if (!info.isValid) return null;
+	return ss58ToEvmAddress(trimmed);
 }
 
 function shortAddr(addr: string): string {
