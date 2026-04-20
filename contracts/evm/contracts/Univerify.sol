@@ -4,8 +4,13 @@ pragma solidity ^0.8.28;
 /// @notice Minimal interface to the soulbound NFT minted on issuance. The
 ///         registry calls into it atomically from `issueCertificate` so the
 ///         student wallet receives the token in the same transaction.
+///         `minter()` is also read at NFT-wire-up time to make sure the NFT
+///         points back at this registry — the only sanity gate we keep now
+///         that there is no privileged configurer.
 interface ICertificateNft {
 	function mintFor(address to, bytes32 certificateId) external returns (uint256);
+
+	function minter() external view returns (address);
 }
 
 /// @title Univerify — Federated Academic Credential Registry
@@ -15,9 +20,12 @@ interface ICertificateNft {
 ///         at least `approvalThreshold` already-Active universities. Only
 ///         Active universities can issue or revoke certificates.
 ///
-///         The contract owner has a minimal, emergency-only surface: suspend
-///         and unsuspend an issuer, and transfer ownership. The owner cannot
-///         register, approve, force-activate, or remove universities.
+///         Governance is fully federated and there is no privileged account.
+///         Active universities collectively onboard new applicants (`apply` +
+///         `approve`) and can also remove one another through a decentralized
+///         removal-proposal flow (`proposeRemoval` + `voteForRemoval`). There
+///         is no owner, no emergency suspend/unsuspend path, and no role that
+///         can unilaterally alter the active set.
 ///
 ///         Verification is presentation-based: a verifier recomputes
 ///         `claimsHash` off-chain and calls `verifyCertificate`. No PII or
@@ -38,12 +46,17 @@ contract Univerify {
 
 	/// @notice Lifecycle of an issuing university.
 	/// @dev `None` is the default (zero) value so an unknown address reads as
-	///      `None` without an extra sentinel check.
+	///      `None` without an extra sentinel check. `Removed` is **not**
+	///      terminal: a removed issuer may re-apply through `applyAsIssuer`,
+	///      which transitions them back to `Pending` and invalidates any
+	///      approvals collected in a prior round via `issuerEpoch`. The slot
+	///      is kept in `_issuerList` for historical lookups either way, so
+	///      re-application never duplicates the enumeration entry.
 	enum IssuerStatus {
 		None,
 		Pending,
 		Active,
-		Suspended
+		Removed
 	}
 
 	/// @notice Full on-chain profile of an issuing university.
@@ -66,9 +79,19 @@ contract Univerify {
 		bytes32 metadataHash;
 	}
 
+	/// @notice On-chain state of a pending or executed removal proposal.
+	/// @dev `createdAt` is stored for UI ordering and potential off-chain
+	///      audit trails; it is not used for any on-chain expiry (none).
+	struct RemovalProposal {
+		address target;
+		address proposer;
+		uint64 createdAt;
+		uint32 voteCount;
+		bool executed;
+	}
+
 	// ── Errors ──────────────────────────────────────────────────────────
 
-	error NotOwner();
 	error NotActiveIssuer();
 
 	error ZeroAddress();
@@ -78,12 +101,19 @@ contract Univerify {
 	error IssuerNotFound();
 	error IssuerNotPending();
 	error IssuerNotActive();
-	error IssuerNotSuspended();
 	error CannotApproveSelf();
 	error AlreadyApproved();
 
 	error InvalidThreshold();
 	error InvalidGenesis();
+
+	// Removal-governance errors
+	error CannotProposeSelfRemoval();
+	error RemovalProposalAlreadyOpen();
+	error RemovalProposalNotFound();
+	error RemovalProposalAlreadyExecuted();
+	error AlreadyVotedForRemoval();
+	error CannotVoteOnOwnRemoval();
 
 	error InvalidCertificateId();
 	error InvalidClaimsHash();
@@ -96,6 +126,7 @@ contract Univerify {
 
 	error NftAlreadySet();
 	error NftNotConfigured();
+	error NftMinterMismatch();
 
 	// ── Constants ───────────────────────────────────────────────────────
 
@@ -106,45 +137,93 @@ contract Univerify {
 	// ── State ───────────────────────────────────────────────────────────
 
 	/// @notice Minimum number of approvals from Active universities required
-	///         to promote a Pending applicant to Active. Set once at deploy.
+	///         to promote a Pending applicant to Active. The same threshold
+	///         also governs removal: a removal proposal executes once its
+	///         vote count reaches `approvalThreshold` votes from currently
+	///         Active issuers. Set once at deploy.
+	/// @dev    A single threshold for both admission and removal keeps the
+	///         federation trust level symmetric. Trade-off: if the number of
+	///         Active issuers ever drops below `approvalThreshold`, both
+	///         paths stall and governance is degenerate. MVP accepts this as
+	///         a redeploy condition rather than encoding a dynamic majority.
 	uint32 public immutable approvalThreshold;
 
-	/// @notice Emergency-only administrator. Can suspend / unsuspend issuers
-	///         and transfer ownership. Cannot register, approve, or issue.
-	address public owner;
+	/// @notice Count of currently Active issuers. Incremented when a Pending
+	///         applicant is promoted, decremented when an Active issuer is
+	///         removed by governance. Exposed so the frontend can render
+	///         threshold status without scanning `_issuerList`.
+	uint32 public activeIssuerCount;
 
 	/// @dev Primary issuer storage. Unknown addresses read as `{status: None}`.
 	mapping(address => Issuer) private _issuers;
 
 	/// @dev Append-only enumeration of every issuer that has ever applied or
 	///      been seeded at genesis. Frontends read this list and filter by
-	///      `status` to render the waitlist / active set. No removals means no
-	///      swap-and-pop complexity and no storage gaps.
+	///      `status` to render the waitlist / active set. No removals means
+	///      no swap-and-pop complexity and no storage gaps. A `Removed`
+	///      issuer still appears in this list with `status = Removed`.
 	address[] private _issuerList;
 
-	/// @dev Approval tracking: candidate => approver => approved?
-	///      Used to prevent double approvals and to expose `hasApproved()`
-	///      to the frontend without relying on event indexing.
-	mapping(address => mapping(address => bool)) private _hasApproved;
+	/// @notice Per-issuer re-application round. Starts at 0 for every address
+	///         and is incremented each time a Removed issuer re-enters the
+	///         Pending waitlist via `applyAsIssuer`. Because approval records
+	///         are keyed by `(candidate, epoch, approver)`, bumping the
+	///         epoch atomically clears the entire approval ledger of the
+	///         previous round without any storage iteration.
+	/// @dev    Public for UI transparency (an applicant's "this is attempt
+	///         N+1" label) and to make the re-application semantics
+	///         observable off-chain. Genesis issuers are on epoch 0; they
+	///         only acquire a non-zero epoch if they are removed and later
+	///         re-apply.
+	mapping(address => uint32) public issuerEpoch;
+
+	/// @dev Approval tracking, namespaced by `issuerEpoch[candidate]` so that
+	///      approvals from a prior round cannot bleed into a re-application.
+	///      Keyed candidate => epoch => approver => approved? Used to prevent
+	///      double approvals and to power `hasApproved()`.
+	mapping(address => mapping(uint32 => mapping(address => bool))) private _hasApproved;
+
+	/// @notice Monotonically increasing counter used as proposal id. The
+	///         first proposal minted is id 1, so `0` is a reserved sentinel
+	///         meaning "no proposal" (used by `openRemovalProposal`).
+	uint256 public removalProposalCount;
+
+	/// @dev Proposal storage keyed by proposal id. Unknown ids read as a
+	///      zeroed struct (target == address(0)) — treated as "not found".
+	mapping(uint256 => RemovalProposal) private _removalProposals;
+
+	/// @dev Per-proposal voting ledger: proposalId => voter => voted?
+	mapping(uint256 => mapping(address => bool)) private _hasVotedOnRemoval;
+
+	/// @notice Currently-open removal proposal id for a given target, or `0`
+	///         if none. Used to enforce "at most one active removal proposal
+	///         per target" and to let the frontend discover proposals by
+	///         target without iterating history.
+	mapping(address => uint256) public openRemovalProposal;
 
 	/// @notice Certificates keyed by `certificateId`.
 	mapping(bytes32 => Certificate) public certificates;
 
 	/// @notice Soulbound NFT contract that mirrors certificate ownership in
-	///         the student's wallet. Set once, post-deploy, by the owner via
-	///         `setCertificateNft` (avoids the chicken-and-egg of the NFT
-	///         needing this contract's address in its constructor).
+	///         the student's wallet. Wired exactly once, post-deploy, by any
+	///         caller via `setCertificateNft` (see that function for the
+	///         trust model — the permissionless one-shot is guarded by a
+	///         minter-matches-self sanity check).
 	address public certificateNft;
 
 	// ── Events ──────────────────────────────────────────────────────────
 
-	event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-
 	event IssuerApplied(address indexed issuer, string name, bytes32 metadataHash);
 	event IssuerApproved(address indexed approver, address indexed issuer, uint32 approvalCount);
 	event IssuerActivated(address indexed issuer);
-	event IssuerSuspended(address indexed issuer);
-	event IssuerUnsuspended(address indexed issuer);
+
+	event RemovalProposalCreated(
+		uint256 indexed proposalId,
+		address indexed target,
+		address indexed proposer
+	);
+	event RemovalVoteCast(uint256 indexed proposalId, address indexed voter, uint32 voteCount);
+	event IssuerRemoved(address indexed issuer, uint256 indexed proposalId);
 
 	event CertificateIssued(
 		bytes32 indexed certificateId,
@@ -155,11 +234,6 @@ contract Univerify {
 	event CertificateNftSet(address indexed nft);
 
 	// ── Modifiers ───────────────────────────────────────────────────────
-
-	modifier onlyOwner() {
-		if (msg.sender != owner) revert NotOwner();
-		_;
-	}
 
 	modifier onlyActiveIssuer() {
 		if (_issuers[msg.sender].status != IssuerStatus.Active) revert NotActiveIssuer();
@@ -172,15 +246,14 @@ contract Univerify {
 	///         are Active from block zero.
 	/// @param  genesis   Non-empty list of genesis universities.
 	/// @param  threshold Number of Active-issuer approvals required to promote
-	///                   a future Pending applicant to Active. Must satisfy
+	///                   a future Pending applicant to Active, and also the
+	///                   number of Active-issuer votes required to remove an
+	///                   Active issuer. Must satisfy
 	///                   `1 <= threshold <= genesis.length` so that at least
 	///                   one onboarding path exists from day one.
 	constructor(GenesisIssuer[] memory genesis, uint32 threshold) {
 		if (threshold == 0) revert InvalidThreshold();
 		if (genesis.length == 0 || threshold > genesis.length) revert InvalidGenesis();
-
-		owner = msg.sender;
-		emit OwnershipTransferred(address(0), msg.sender);
 
 		approvalThreshold = threshold;
 
@@ -201,18 +274,40 @@ contract Univerify {
 			_issuerList.push(g.account);
 			emit IssuerActivated(g.account);
 		}
+		activeIssuerCount = uint32(genesis.length);
 	}
 
 	// ── Governance: Application & Approval ──────────────────────────────
 
 	/// @notice Self-apply to join the registry as a university. The caller's
 	///         address becomes the issuer identity. Starts in `Pending`.
+	/// @dev    Also the re-application entrypoint: a `Removed` caller may
+	///         call this again to re-enter the waitlist. In that case the
+	///         enumeration slot is reused (no `_issuerList.push`), the
+	///         profile fields are overwritten with the new `name` and
+	///         `metadataHash`, `approvalCount` is reset to 0, and
+	///         `issuerEpoch[msg.sender]` is bumped so that approvals from
+	///         the previous round cannot count toward this one. `Pending`
+	///         and `Active` callers remain rejected with `IssuerAlreadyExists`.
 	/// @param  name          Human-readable institution name (1..MAX_NAME_LENGTH bytes).
 	/// @param  metadataHash  Off-chain metadata commitment (DID doc, IPFS CID,
 	///                       etc.). Not resolved on-chain.
 	function applyAsIssuer(string calldata name, bytes32 metadataHash) external {
 		_validateName(name);
-		if (_issuers[msg.sender].status != IssuerStatus.None) revert IssuerAlreadyExists();
+		IssuerStatus prev = _issuers[msg.sender].status;
+		if (prev == IssuerStatus.Pending || prev == IssuerStatus.Active) {
+			revert IssuerAlreadyExists();
+		}
+
+		if (prev == IssuerStatus.Removed) {
+			// Re-application: bump the approval round so prior votes can't
+			// leak in, and keep the existing `_issuerList` slot so the
+			// enumeration remains append-only.
+			issuerEpoch[msg.sender] += 1;
+		} else {
+			// First-time applicant: extend the enumeration.
+			_issuerList.push(msg.sender);
+		}
 
 		_issuers[msg.sender] = Issuer({
 			account: msg.sender,
@@ -222,7 +317,6 @@ contract Univerify {
 			registeredAt: uint64(block.timestamp),
 			approvalCount: 0
 		});
-		_issuerList.push(msg.sender);
 
 		emit IssuerApplied(msg.sender, name, metadataHash);
 	}
@@ -236,9 +330,10 @@ contract Univerify {
 
 		Issuer storage c = _issuers[candidate];
 		if (c.status != IssuerStatus.Pending) revert IssuerNotPending();
-		if (_hasApproved[candidate][msg.sender]) revert AlreadyApproved();
+		uint32 epoch = issuerEpoch[candidate];
+		if (_hasApproved[candidate][epoch][msg.sender]) revert AlreadyApproved();
 
-		_hasApproved[candidate][msg.sender] = true;
+		_hasApproved[candidate][epoch][msg.sender] = true;
 		uint32 newCount = c.approvalCount + 1;
 		c.approvalCount = newCount;
 
@@ -246,51 +341,109 @@ contract Univerify {
 
 		if (newCount >= approvalThreshold) {
 			c.status = IssuerStatus.Active;
+			activeIssuerCount += 1;
 			emit IssuerActivated(candidate);
 		}
 	}
 
-	// ── Governance: Emergency (owner) ───────────────────────────────────
+	// ── Governance: Removal ─────────────────────────────────────────────
 
-	/// @notice Suspend an Active issuer. Previously issued certificates remain
-	///         readable and verifiable, but the issuer can no longer issue
-	///         or revoke. Only the contract owner can call this.
-	function suspendIssuer(address issuer) external onlyOwner {
-		Issuer storage prof = _issuers[issuer];
-		if (prof.status == IssuerStatus.None) revert IssuerNotFound();
-		if (prof.status != IssuerStatus.Active) revert IssuerNotActive();
-		prof.status = IssuerStatus.Suspended;
-		emit IssuerSuspended(issuer);
+	/// @notice Open a removal proposal against an Active issuer. The
+	///         proposer's own vote is counted as the first vote, so a
+	///         proposal starts with `voteCount == 1`. If that already meets
+	///         `approvalThreshold` (e.g. threshold of 1), removal executes
+	///         in the same transaction.
+	/// @dev    Self-proposal is disallowed on purpose: an Active issuer that
+	///         wants to step down can simply stop acting; there is no
+	///         on-chain "resign" path in this MVP. Forcing removal through
+	///         another proposer keeps the flow symmetric with admission.
+	/// @param  target Active issuer to propose for removal.
+	/// @return proposalId The new proposal id (always > 0).
+	function proposeRemoval(
+		address target
+	) external onlyActiveIssuer returns (uint256 proposalId) {
+		if (target == msg.sender) revert CannotProposeSelfRemoval();
+		Issuer storage t = _issuers[target];
+		if (t.status == IssuerStatus.None) revert IssuerNotFound();
+		if (t.status != IssuerStatus.Active) revert IssuerNotActive();
+		if (openRemovalProposal[target] != 0) revert RemovalProposalAlreadyOpen();
+
+		proposalId = ++removalProposalCount;
+		_removalProposals[proposalId] = RemovalProposal({
+			target: target,
+			proposer: msg.sender,
+			createdAt: uint64(block.timestamp),
+			voteCount: 1,
+			executed: false
+		});
+		_hasVotedOnRemoval[proposalId][msg.sender] = true;
+		openRemovalProposal[target] = proposalId;
+
+		emit RemovalProposalCreated(proposalId, target, msg.sender);
+		emit RemovalVoteCast(proposalId, msg.sender, 1);
+
+		_maybeExecuteRemoval(proposalId);
 	}
 
-	/// @notice Lift a prior suspension. Only callable by the contract owner.
-	function unsuspendIssuer(address issuer) external onlyOwner {
-		Issuer storage prof = _issuers[issuer];
-		if (prof.status == IssuerStatus.None) revert IssuerNotFound();
-		if (prof.status != IssuerStatus.Suspended) revert IssuerNotSuspended();
-		prof.status = IssuerStatus.Active;
-		emit IssuerUnsuspended(issuer);
+	/// @notice Cast a vote in favour of an open removal proposal. Only
+	///         currently-Active issuers may vote, at most once per proposal,
+	///         and the target of the proposal cannot vote on their own
+	///         removal. When the vote count reaches `approvalThreshold` the
+	///         target is demoted to `Removed` atomically in the same tx.
+	/// @dev    We intentionally do NOT retroactively decrement vote counts
+	///         when a prior voter is itself later removed. Each vote was
+	///         valid at the moment it was cast by an Active issuer, and
+	///         re-tallying history would add complexity without changing
+	///         the trust model in a meaningful way.
+	function voteForRemoval(uint256 proposalId) external onlyActiveIssuer {
+		RemovalProposal storage p = _removalProposals[proposalId];
+		if (p.target == address(0)) revert RemovalProposalNotFound();
+		if (p.executed) revert RemovalProposalAlreadyExecuted();
+		if (msg.sender == p.target) revert CannotVoteOnOwnRemoval();
+		if (_hasVotedOnRemoval[proposalId][msg.sender]) revert AlreadyVotedForRemoval();
+
+		_hasVotedOnRemoval[proposalId][msg.sender] = true;
+		uint32 newCount = p.voteCount + 1;
+		p.voteCount = newCount;
+
+		emit RemovalVoteCast(proposalId, msg.sender, newCount);
+
+		_maybeExecuteRemoval(proposalId);
 	}
 
-	/// @notice Transfer ownership of the emergency-admin role.
-	/// @dev    One-step transfer; the deploying account is responsible for
-	///         choosing a safe target (EOA, multisig, etc.).
-	function transferOwnership(address newOwner) external onlyOwner {
-		if (newOwner == address(0)) revert ZeroAddress();
-		address prev = owner;
-		owner = newOwner;
-		emit OwnershipTransferred(prev, newOwner);
+	/// @dev Execute removal if threshold reached. Internal to keep the
+	///      post-vote side-effects (status flip, counter updates, event)
+	///      identical whether the triggering call was `proposeRemoval` or
+	///      `voteForRemoval`.
+	function _maybeExecuteRemoval(uint256 proposalId) private {
+		RemovalProposal storage p = _removalProposals[proposalId];
+		if (p.voteCount >= approvalThreshold) {
+			p.executed = true;
+			_issuers[p.target].status = IssuerStatus.Removed;
+			activeIssuerCount -= 1;
+			delete openRemovalProposal[p.target];
+			emit IssuerRemoved(p.target, proposalId);
+		}
 	}
 
-	/// @notice Wire up the soulbound `CertificateNft` contract. Settable
-	///         exactly once by the deploy script, immediately after both
-	///         contracts exist on-chain. After that, issuance always mints.
-	///         We keep this as a separate one-shot setter (rather than a
-	///         constructor argument) to avoid the circular dependency
-	///         between the two contracts at construction time.
-	function setCertificateNft(address nft) external onlyOwner {
+	// ── NFT wiring ──────────────────────────────────────────────────────
+
+	/// @notice Wire up the soulbound `CertificateNft` contract. One-shot and
+	///         permissionless: any caller may invoke it exactly once, and
+	///         only if the passed NFT's immutable `minter()` already points
+	///         back at this registry. The minter check is the security
+	///         backstop — an NFT wired here can only ever be minted by this
+	///         Univerify's `issueCertificate`, so a mis-wiring can at worst
+	///         deny service and require a redeploy, never corrupt issuance
+	///         or governance state.
+	/// @dev    We keep this as a separate setter (rather than a constructor
+	///         argument) to avoid the circular dependency between the two
+	///         contracts at construction time: the NFT needs Univerify's
+	///         address in its constructor, and Univerify needs the NFT's.
+	function setCertificateNft(address nft) external {
 		if (nft == address(0)) revert ZeroAddress();
 		if (certificateNft != address(0)) revert NftAlreadySet();
+		if (ICertificateNft(nft).minter() != address(this)) revert NftMinterMismatch();
 		certificateNft = nft;
 		emit CertificateNftSet(nft);
 	}
@@ -335,7 +488,9 @@ contract Univerify {
 	}
 
 	/// @notice Revoke a certificate. Only the original issuer, and only while
-	///         still Active, may revoke.
+	///         still Active, may revoke. An issuer removed by governance
+	///         cannot revoke their own past certificates — the federation
+	///         has withdrawn their right to act.
 	function revokeCertificate(bytes32 certificateId) external onlyActiveIssuer {
 		if (certificateId == bytes32(0)) revert InvalidCertificateId();
 
@@ -383,11 +538,15 @@ contract Univerify {
 		return _issuers[account].status == IssuerStatus.Active;
 	}
 
-	/// @notice Whether a given Active issuer has already approved a candidate.
-	///         Enables the UI to disable an already-used approval button
+	/// @notice Whether a given Active issuer has already approved a candidate
+	///         **in the current application round** (i.e. for
+	///         `issuerEpoch[candidate]`). Approvals from previous rounds —
+	///         before a prior removal — are intentionally not surfaced here
+	///         so the UI always reflects the live, actionable state. Enables
+	///         the frontend to disable an already-used approval button
 	///         without replaying events.
 	function hasApproved(address candidate, address approver) external view returns (bool) {
-		return _hasApproved[candidate][approver];
+		return _hasApproved[candidate][issuerEpoch[candidate]][approver];
 	}
 
 	/// @notice Total number of known issuers (any status).
@@ -398,6 +557,25 @@ contract Univerify {
 	/// @notice Nth known issuer address, for paginated reads.
 	function issuerAt(uint256 index) external view returns (address) {
 		return _issuerList[index];
+	}
+
+	// ── Read Helpers: Removal Governance ────────────────────────────────
+
+	/// @notice Full proposal record by id. Unknown ids return a zeroed
+	///         struct (`target == address(0)`) which the frontend treats as
+	///         "not found".
+	function getRemovalProposal(
+		uint256 proposalId
+	) external view returns (RemovalProposal memory) {
+		return _removalProposals[proposalId];
+	}
+
+	/// @notice Whether a voter has already voted on a specific proposal.
+	function hasVotedOnRemoval(
+		uint256 proposalId,
+		address voter
+	) external view returns (bool) {
+		return _hasVotedOnRemoval[proposalId][voter];
 	}
 
 	// ── Internal ────────────────────────────────────────────────────────
