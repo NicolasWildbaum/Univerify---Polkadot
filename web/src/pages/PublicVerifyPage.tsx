@@ -67,8 +67,8 @@ export default function PublicVerifyPage() {
 					abi: univerifyAbi,
 					functionName: "certificates",
 					args: [certificateId],
-				})) as readonly [Address, Hex, Hex, bigint, boolean];
-				const [issuer, , , issuedAt, revoked] = cert;
+				})) as readonly [Address, Hex, bigint, boolean];
+				const [issuer, , issuedAt, revoked] = cert;
 
 				const exists = issuer !== ZERO_ADDRESS;
 

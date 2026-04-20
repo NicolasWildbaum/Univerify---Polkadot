@@ -45,7 +45,6 @@ export const univerifyAbi = [
 		inputs: [
 			{ name: "certificateId", type: "bytes32" },
 			{ name: "claimsHash", type: "bytes32" },
-			{ name: "recipientCommitment", type: "bytes32" },
 			{ name: "studentAddress", type: "address" },
 		],
 		outputs: [{ name: "", type: "bytes32" }],
@@ -97,7 +96,6 @@ export const univerifyAbi = [
 		outputs: [
 			{ name: "issuer", type: "address" },
 			{ name: "claimsHash", type: "bytes32" },
-			{ name: "recipientCommitment", type: "bytes32" },
 			{ name: "issuedAt", type: "uint256" },
 			{ name: "revoked", type: "bool" },
 		],

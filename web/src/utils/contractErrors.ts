@@ -42,7 +42,6 @@ export type UniverifyErrorName =
 	// Certificate errors
 	| "InvalidCertificateId"
 	| "InvalidClaimsHash"
-	| "InvalidRecipientCommitment"
 	| "InvalidStudentAddress"
 	| "CertificateAlreadyExists"
 	| "CertificateNotFound"
@@ -80,7 +79,6 @@ const KNOWN_ERROR_NAMES: readonly UniverifyErrorName[] = [
 	"CannotVoteOnOwnRemoval",
 	"InvalidCertificateId",
 	"InvalidClaimsHash",
-	"InvalidRecipientCommitment",
 	"InvalidStudentAddress",
 	"CertificateAlreadyExists",
 	"CertificateNotFound",

@@ -2,10 +2,13 @@
  * Canonical credential construction and hashing for Univerify.
  *
  * Frontend copy of `contracts/evm/src/credential.ts`. Kept verbatim so the
- * frontend reproduces exactly the same `claimsHash`, `certificateId`, and
- * `recipientCommitment` as the deploy scripts and tests. Any schema or
- * encoding change MUST be mirrored in both files until a shared package is
- * introduced.
+ * frontend reproduces exactly the same `claimsHash` and `certificateId` as
+ * the deploy scripts and tests. Any schema or encoding change MUST be
+ * mirrored in both files until a shared package is introduced.
+ *
+ * Holder-to-credential binding is handled entirely by the soulbound NFT
+ * minted to the student's wallet by `CertificateNft`; there is no
+ * separate holder commitment in the credential envelope.
  *
  * Hashing uses Solidity-compatible keccak256(abi.encode(...)) via viem.
  */
@@ -137,26 +140,6 @@ export function deriveCertificateId(issuer: Hex, internalRef: string): Hex {
 	);
 }
 
-// ── Recipient Commitment ────────────────────────────────────────────
-
-/**
- * Compute the `recipientCommitment` — a privacy-preserving binding of
- * the credential to its holder.
- *
- * `recipientCommitment = keccak256(abi.encode(secret, holderIdentifier))`
- */
-export function computeRecipientCommitment(secret: Hex, holderIdentifier: string): Hex {
-	return keccak256(
-		encodeAbiParameters(
-			[
-				{ type: "bytes32", name: "secret" },
-				{ type: "string", name: "holderIdentifier" },
-			],
-			[secret, holderIdentifier],
-		),
-	);
-}
-
 // ── Full Credential Envelope ────────────────────────────────────────
 
 /**
@@ -167,7 +150,6 @@ export interface VerifiableCredential {
 	certificateId: Hex;
 	issuer: Hex;
 	claims: CredentialClaims;
-	recipientCommitment: Hex;
 }
 
 /**
@@ -177,13 +159,10 @@ export function buildCredential(params: {
 	issuer: Hex;
 	internalRef: string;
 	claims: CredentialClaims;
-	secret: Hex;
-	holderIdentifier: string;
 }): {
 	credential: VerifiableCredential;
 	claimsHash: Hex;
 	certificateId: Hex;
-	recipientCommitment: Hex;
 } {
 	const certificateId = deriveCertificateId(params.issuer, params.internalRef);
 	// Normalize once and reuse: the JSON envelope carries the canonical
@@ -191,18 +170,15 @@ export function buildCredential(params: {
 	// issuer did, even if they re-render or re-key the JSON.
 	const normalizedClaims = normalizeClaims(params.claims);
 	const claimsHash = computeClaimsHash(normalizedClaims);
-	const recipientCommitment = computeRecipientCommitment(params.secret, params.holderIdentifier);
 
 	return {
 		credential: {
 			certificateId,
 			issuer: params.issuer,
 			claims: normalizedClaims,
-			recipientCommitment,
 		},
 		claimsHash,
 		certificateId,
-		recipientCommitment,
 	};
 }
 
@@ -230,15 +206,6 @@ export function parseVerifiableCredential(
 	if (typeof v.issuer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(v.issuer)) {
 		return { ok: false, error: "Missing or invalid `issuer` (expected 0x-prefixed address)." };
 	}
-	if (
-		typeof v.recipientCommitment !== "string" ||
-		!/^0x[0-9a-fA-F]{64}$/.test(v.recipientCommitment)
-	) {
-		return {
-			ok: false,
-			error: "Missing or invalid `recipientCommitment` (expected 0x-prefixed bytes32).",
-		};
-	}
 	if (!v.claims || typeof v.claims !== "object") {
 		return { ok: false, error: "Missing `claims` object." };
 	}
@@ -254,7 +221,6 @@ export function parseVerifiableCredential(
 		credential: {
 			certificateId: v.certificateId as Hex,
 			issuer: v.issuer as Hex,
-			recipientCommitment: v.recipientCommitment as Hex,
 			claims: {
 				degreeTitle: c.degreeTitle as string,
 				holderName: c.holderName as string,

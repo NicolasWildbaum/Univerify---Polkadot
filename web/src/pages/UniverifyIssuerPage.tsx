@@ -60,15 +60,6 @@ type AuthStatus =
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-function randomBytes32(): Hex {
-	const bytes = new Uint8Array(32);
-	crypto.getRandomValues(bytes);
-	const hex = Array.from(bytes)
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("");
-	return `0x${hex}` as Hex;
-}
-
 /// Friendlier message when an error reaches us as the opaque
 /// `Revive.ContractReverted` dispatch error — typically because the on-chain
 /// contract is older than the one this UI was built against (e.g. it lacks
@@ -118,8 +109,6 @@ export default function UniverifyIssuerPage() {
 
 	// Issuance-time metadata
 	const [internalRef, setInternalRef] = useState("");
-	const [holderIdentifier, setHolderIdentifier] = useState("");
-	const [secret, setSecret] = useState<Hex>(randomBytes32());
 	// Student wallet that receives the soulbound NFT. The contract requires
 	// a non-zero address; we validate the EIP-55 / hex shape with viem.
 	const [studentAddress, setStudentAddress] = useState("");
@@ -236,8 +225,7 @@ export default function UniverifyIssuerPage() {
 			claims.holderName.trim() &&
 			claims.institutionName.trim() &&
 			claims.issuanceDate.trim() &&
-			internalRef.trim() &&
-			holderIdentifier.trim();
+			internalRef.trim();
 
 		if (!ready) return null;
 
@@ -251,13 +239,11 @@ export default function UniverifyIssuerPage() {
 					institutionName: claims.institutionName,
 					issuanceDate: claims.issuanceDate,
 				},
-				secret,
-				holderIdentifier: holderIdentifier.trim(),
 			});
 		} catch {
 			return null;
 		}
-	}, [claims, internalRef, holderIdentifier, secret, issuerAddress]);
+	}, [claims, internalRef, issuerAddress]);
 
 	const busy = tx.kind === "sending" || revokeTx.kind === "sending";
 	const canSubmit =
@@ -309,12 +295,7 @@ export default function UniverifyIssuerPage() {
 					address: addr,
 					abi: univerifyAbi as unknown as Abi,
 					functionName: "issueCertificate",
-					args: [
-						preview.certificateId,
-						preview.claimsHash,
-						preview.recipientCommitment,
-						student,
-					],
+					args: [preview.certificateId, preview.claimsHash, student],
 				});
 			} catch (simErr) {
 				console.warn("[Univerify] issueCertificate pre-flight reverted", {
@@ -333,12 +314,7 @@ export default function UniverifyIssuerPage() {
 				contractAddress: addr,
 				abi: univerifyAbi as unknown as Abi,
 				functionName: "issueCertificate",
-				args: [
-					preview.certificateId,
-					preview.claimsHash,
-					preview.recipientCommitment,
-					student,
-				],
+				args: [preview.certificateId, preview.claimsHash, student],
 			});
 
 			setTx({
@@ -445,11 +421,6 @@ export default function UniverifyIssuerPage() {
 										: contractRevertedFallback(e);
 			setRevokeTx({ kind: "error", message });
 		}
-	}
-
-	function regenerateSecret() {
-		setSecret(randomBytes32());
-		if (tx.kind === "success" || tx.kind === "error") setTx({ kind: "idle" });
 	}
 
 	function copyCredentialJson(credential: VerifiableCredential) {
@@ -591,25 +562,6 @@ export default function UniverifyIssuerPage() {
 								</p>
 							</div>
 
-							<div>
-								<label className="label">
-									Holder Identifier
-									<span className="text-text-muted ml-1">
-										(never stored on-chain)
-									</span>
-								</label>
-								<input
-									type="text"
-									value={holderIdentifier}
-									onChange={(e) => setHolderIdentifier(e.target.value)}
-									placeholder="ada@uba.ar"
-									className="input-field w-full"
-								/>
-								<p className="text-xs text-text-muted mt-1">
-									Used only to derive <code>recipientCommitment</code>.
-								</p>
-							</div>
-
 							<div className="md:col-span-2">
 								<label className="label">
 									Student Wallet Address
@@ -650,29 +602,6 @@ export default function UniverifyIssuerPage() {
 								) : null}
 							</div>
 
-							<div className="md:col-span-2">
-								<label className="label">Secret (bytes32)</label>
-								<div className="flex gap-2">
-									<input
-										type="text"
-										value={secret}
-										onChange={(e) => setSecret(e.target.value as Hex)}
-										className="input-field w-full"
-										spellCheck={false}
-									/>
-									<button
-										onClick={regenerateSecret}
-										className="btn-secondary text-xs whitespace-nowrap"
-									>
-										Regenerate
-									</button>
-								</div>
-								<p className="text-xs text-text-muted mt-1">
-									Shared secret between issuer and holder. Anyone who knows it
-									plus the <code>holderIdentifier</code> can prove ownership of
-									the certificate.
-								</p>
-							</div>
 						</div>
 					</div>
 
@@ -687,10 +616,6 @@ export default function UniverifyIssuerPage() {
 										value={preview.certificateId}
 									/>
 									<HashField label="Claims Hash" value={preview.claimsHash} />
-									<HashField
-										label="Recipient Commitment"
-										value={preview.recipientCommitment}
-									/>
 								</div>
 								<CanonicalClaimsPanel claims={preview.credential.claims} />
 							</div>

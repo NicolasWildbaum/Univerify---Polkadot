@@ -97,9 +97,9 @@ export default function MyCertificatesPage() {
 						abi: univerifyAbi,
 						functionName: "certificates",
 						args: [certificateId],
-					})) as readonly [Address, Hex, Hex, bigint, boolean];
+					})) as readonly [Address, Hex, bigint, boolean];
 
-					const [issuer, , , issuedAt, revoked] = cert;
+					const [issuer, , issuedAt, revoked] = cert;
 
 					let issuerName = "";
 					try {
