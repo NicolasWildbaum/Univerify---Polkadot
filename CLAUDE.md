@@ -4,6 +4,31 @@ This file provides context for AI agents working with this repository.
 
 ## Project Purpose
 
+This repo hosts **Univerify**, a federated academic-credential registry built on the Polkadot ecosystem as Solidity contracts running under `pallet-revive`. It was bootstrapped from the `polkadot-stack-template` below; the Proof-of-Existence sections that follow describe that underlying template, not the Univerify product.
+
+For Univerify-specific context read, in order: [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), [`BACKEND_DESIGN.md`](BACKEND_DESIGN.md), [`CLAIMS_SCHEMA.md`](CLAIMS_SCHEMA.md), [`AI_RULES.md`](AI_RULES.md).
+
+### Univerify at a glance
+
+- **Contracts** (`contracts/evm/contracts/`): `Univerify.sol` (registry + federated governance, no owner) and `CertificateNft.sol` (soulbound ERC-721 minted atomically on issuance).
+- **Governance**: `applyAsIssuer` / `approveIssuer` for admission, `proposeRemoval` / `voteForRemoval` for removal, both gated by the same immutable `approvalThreshold`. Removed issuers can re-apply; a per-issuer `issuerEpoch` invalidates prior-round approvals.
+- **NFT wiring**: `setCertificateNft` is permissionless and one-shot; the only guard is that the NFT's immutable `minter()` must equal the registry address.
+- **Frontend** (`web/src/pages/`): `GovernancePage.tsx`, `UniverifyIssuerPage.tsx`, `PublicVerifyPage.tsx`, `MyCertificatesPage.tsx`. Writes go through `pallet_revive::call` signed by the connected Polkadot wallet (`web/src/account/reviveCall.ts`); reads go through viem + eth-rpc. Every write is pre-flighted with `publicClient.simulateContract` so custom-error names surface instead of the generic `Revive.ContractReverted`.
+- **Deploy script**: `contracts/evm/scripts/deploy-univerify.ts` deploys both contracts and wires them in one step. The deployer retains no lingering authority.
+- **Untouched by Univerify**: `blockchain/` (FRAME pallet + runtime) and `cli/`. Do not add Univerify logic there.
+
+Useful commands for Univerify work:
+
+```bash
+cd contracts/evm && ./node_modules/.bin/hardhat compile
+cd contracts/evm && ./node_modules/.bin/hardhat test
+cd web && npm run lint && npx tsc --noEmit
+```
+
+---
+
+## Underlying Template (Polkadot Stack Template)
+
 A developer starter template for the **Polkadot Blockchain Academy** demonstrating the full Polkadot technology stack through a **Proof of Existence** system. The same concept — claim and revoke ownership of file hashes on-chain — is implemented as a Substrate pallet, a Solidity EVM contract, a Solidity PVM contract, a React frontend, and a Rust CLI.
 
 Students do not need to use every part. Components are intentionally separated so teams can keep only the slices they want.
@@ -31,6 +56,22 @@ Students do not need to use every part. Components are intentionally separated s
 - The local dev chain ID is `420420421`. The Polkadot Hub TestNet chain ID is `420420417`.
 
 ## Key Files
+
+Univerify product:
+
+- `contracts/evm/contracts/Univerify.sol` — federated registry + governance
+- `contracts/evm/contracts/CertificateNft.sol` — soulbound ERC-721
+- `contracts/evm/test/Univerify.test.ts` — governance + certificate lifecycle tests
+- `contracts/evm/scripts/deploy-univerify.ts` — deploys + wires both contracts
+- `web/src/pages/GovernancePage.tsx` — apply / approve / propose / vote UI with pre-flight simulation
+- `web/src/pages/UniverifyIssuerPage.tsx` — issue / revoke
+- `web/src/pages/PublicVerifyPage.tsx` — verifier UX
+- `web/src/pages/MyCertificatesPage.tsx` — student view via NFT enumeration
+- `web/src/config/univerify.ts` — ABI + `IssuerStatus` mirror
+- `web/src/utils/contractErrors.ts` — custom-error parser
+- `web/src/account/reviveCall.ts` — `pallet_revive::call` write path
+
+Template scaffold (reference only, unused by Univerify):
 
 - `blockchain/pallets/template/src/lib.rs` — Pallet logic (create_claim, revoke_claim)
 - `blockchain/runtime/src/lib.rs` — Runtime definition, pallet wiring, runtime APIs
