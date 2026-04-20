@@ -1,12 +1,16 @@
 /**
  * Canonical credential construction and hashing for Univerify.
  *
- * This module is the single source of truth for how `claimsHash`,
- * `certificateId`, and `recipientCommitment` are computed. It is
- * imported by deploy scripts, tests, and (via the web copy) the frontend.
+ * This module is the single source of truth for how `claimsHash` and
+ * `certificateId` are computed. It is imported by deploy scripts, tests,
+ * and (via the web copy) the frontend.
  *
  * Hashing uses Solidity-compatible keccak256(abi.encode(...)) so the
  * same result can be reproduced on-chain or in any EVM-compatible tool.
+ *
+ * Holder-to-credential binding is handled entirely by the soulbound NFT
+ * minted to the student's wallet by `CertificateNft`; there is no
+ * separate holder commitment in the credential envelope.
  */
 
 import { encodeAbiParameters, keccak256, type Hex } from "viem";
@@ -138,32 +142,6 @@ export function deriveCertificateId(issuer: Hex, internalRef: string): Hex {
 	);
 }
 
-// ── Recipient Commitment ────────────────────────────────────────────
-
-/**
- * Compute the `recipientCommitment` — a privacy-preserving binding of
- * the credential to its holder.
- *
- * `recipientCommitment = keccak256(abi.encode(secret, holderIdentifier))`
- *
- * - `secret`: a random value known only to the issuer and the holder.
- * - `holderIdentifier`: any stable identifier for the holder (email,
- *    student ID, national ID hash, etc.).
- *
- * The holder proves ownership by revealing the preimage to a verifier.
- */
-export function computeRecipientCommitment(secret: Hex, holderIdentifier: string): Hex {
-	return keccak256(
-		encodeAbiParameters(
-			[
-				{ type: "bytes32", name: "secret" },
-				{ type: "string", name: "holderIdentifier" },
-			],
-			[secret, holderIdentifier],
-		),
-	);
-}
-
 // ── Full Credential Envelope ────────────────────────────────────────
 
 /**
@@ -174,7 +152,6 @@ export interface VerifiableCredential {
 	certificateId: Hex;
 	issuer: Hex;
 	claims: CredentialClaims;
-	recipientCommitment: Hex;
 }
 
 /**
@@ -186,13 +163,10 @@ export function buildCredential(params: {
 	issuer: Hex;
 	internalRef: string;
 	claims: CredentialClaims;
-	secret: Hex;
-	holderIdentifier: string;
 }): {
 	credential: VerifiableCredential;
 	claimsHash: Hex;
 	certificateId: Hex;
-	recipientCommitment: Hex;
 } {
 	const certificateId = deriveCertificateId(params.issuer, params.internalRef);
 	// Normalize once and reuse: the JSON envelope carries the canonical
@@ -200,20 +174,14 @@ export function buildCredential(params: {
 	// issuer did, even if they re-render or re-key the JSON.
 	const normalizedClaims = normalizeClaims(params.claims);
 	const claimsHash = computeClaimsHash(normalizedClaims);
-	const recipientCommitment = computeRecipientCommitment(
-		params.secret,
-		params.holderIdentifier,
-	);
 
 	return {
 		credential: {
 			certificateId,
 			issuer: params.issuer,
 			claims: normalizedClaims,
-			recipientCommitment,
 		},
 		claimsHash,
 		certificateId,
-		recipientCommitment,
 	};
 }

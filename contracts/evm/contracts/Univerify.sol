@@ -36,10 +36,12 @@ contract Univerify {
 	// ── Types ───────────────────────────────────────────────────────────
 
 	/// @notice On-chain representation of an academic credential.
+	/// @dev Holder binding is delegated to the soulbound NFT minted to the
+	///      student's wallet by `CertificateNft`; the registry intentionally
+	///      keeps no holder-identity material of its own.
 	struct Certificate {
 		address issuer;
 		bytes32 claimsHash;
-		bytes32 recipientCommitment;
 		uint256 issuedAt;
 		bool revoked;
 	}
@@ -117,7 +119,6 @@ contract Univerify {
 
 	error InvalidCertificateId();
 	error InvalidClaimsHash();
-	error InvalidRecipientCommitment();
 	error InvalidStudentAddress();
 	error CertificateAlreadyExists();
 	error CertificateNotFound();
@@ -459,12 +460,10 @@ contract Univerify {
 	function issueCertificate(
 		bytes32 certificateId,
 		bytes32 claimsHash,
-		bytes32 recipientCommitment,
 		address studentAddress
 	) external onlyActiveIssuer returns (bytes32) {
 		if (certificateId == bytes32(0)) revert InvalidCertificateId();
 		if (claimsHash == bytes32(0)) revert InvalidClaimsHash();
-		if (recipientCommitment == bytes32(0)) revert InvalidRecipientCommitment();
 		if (studentAddress == address(0)) revert InvalidStudentAddress();
 		if (certificates[certificateId].issuer != address(0)) revert CertificateAlreadyExists();
 		address nft = certificateNft;
@@ -473,7 +472,6 @@ contract Univerify {
 		certificates[certificateId] = Certificate({
 			issuer: msg.sender,
 			claimsHash: claimsHash,
-			recipientCommitment: recipientCommitment,
 			issuedAt: block.timestamp,
 			revoked: false
 		});

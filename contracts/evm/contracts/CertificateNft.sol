@@ -14,13 +14,7 @@ interface IUniverifyRegistry {
 	)
 		external
 		view
-		returns (
-			address issuer,
-			bytes32 claimsHash,
-			bytes32 recipientCommitment,
-			uint256 issuedAt,
-			bool revoked
-		);
+		returns (address issuer, bytes32 claimsHash, uint256 issuedAt, bool revoked);
 }
 
 /// @title CertificateNft — soulbound ERC721 ownership layer for Univerify
@@ -112,7 +106,7 @@ contract CertificateNft is ERC721, ERC721Enumerable {
 	function isRevoked(uint256 tokenId) external view returns (bool) {
 		bytes32 certId = tokenIdToCertId[tokenId];
 		if (certId == bytes32(0)) return false;
-		(, , , , bool revoked) = registry.certificates(certId);
+		(, , , bool revoked) = registry.certificates(certId);
 		return revoked;
 	}
 

@@ -8,7 +8,6 @@ const ZERO_BYTES32: Hex = "0x000000000000000000000000000000000000000000000000000
 const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000";
 
 const claimsHash = keccak256(toBytes("canonical-claims-json"));
-const recipientCommitment = keccak256(toBytes("recipient-secret-commitment"));
 const certificateId = keccak256(toBytes("cert-001"));
 const certificateId2 = keccak256(toBytes("cert-002"));
 const meta = keccak256(toBytes("meta"));
@@ -128,7 +127,7 @@ describe("CertificateNft", function () {
 				await loadFixture(deployWired);
 
 			const txHash = await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
@@ -169,7 +168,7 @@ describe("CertificateNft", function () {
 		it("reverts AlreadyMinted (via duplicate issuance) — surfaces as CertificateAlreadyExists at the registry", async function () {
 			const { univerify, alice, student } = await loadFixture(deployWired);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 			// The registry guards duplicates first, so re-issuing the same id reverts
@@ -178,7 +177,7 @@ describe("CertificateNft", function () {
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
-						[certificateId, claimsHash, recipientCommitment, student.account.address],
+						[certificateId, claimsHash, student.account.address],
 						{ account: alice.account },
 					),
 				"CertificateAlreadyExists",
@@ -191,7 +190,7 @@ describe("CertificateNft", function () {
 			const { univerify, certificateNft, alice, student, other } =
 				await loadFixture(deployWired);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 			await expectRevert(
@@ -208,7 +207,7 @@ describe("CertificateNft", function () {
 			const { univerify, certificateNft, alice, student, other } =
 				await loadFixture(deployWired);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 			await expectRevert(
@@ -227,7 +226,7 @@ describe("CertificateNft", function () {
 			const { univerify, certificateNft, alice, student, other } =
 				await loadFixture(deployWired);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 			await expectRevert(
@@ -256,7 +255,7 @@ describe("CertificateNft", function () {
 			const { univerify, certificateNft, alice, student } =
 				await loadFixture(deployWired);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 			const tokenId = (await certificateNft.read.certIdToTokenId([
@@ -287,11 +286,11 @@ describe("CertificateNft", function () {
 				await loadFixture(deployWired);
 
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 			await univerify.write.issueCertificate(
-				[certificateId2, claimsHash, recipientCommitment, student.account.address],
+				[certificateId2, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 
@@ -323,7 +322,7 @@ describe("CertificateNft", function () {
 				await loadFixture(deployWired);
 			expect((await certificateNft.read.totalSupply()) as bigint).to.equal(0n);
 			await univerify.write.issueCertificate(
-				[certificateId, claimsHash, recipientCommitment, student.account.address],
+				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
 			expect((await certificateNft.read.totalSupply()) as bigint).to.equal(1n);
