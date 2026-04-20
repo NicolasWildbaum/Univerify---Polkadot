@@ -188,6 +188,11 @@ Verifies on-chain:
 - **Issuer authenticity**: `issuer` is readable; verifier checks `isActiveIssuer(issuer)` (or accepts a previously-Active issuer).
 - **Revocation status**.
 
+The frontend exposes two complementary paths:
+
+- `/verify/cert/<certificateId>` — NFT-anchored: existence, issuer profile, soulbound holder, revocation. No claims input.
+- `/verify` ("Validate Information Integrity") — claims-anchored: verifier types holder name, degree, institution and a month/year (`YYYY-MM`); the page hashes via `computeClaimsHash` (Schema v2 normalization: NFC + trim + collapse whitespace + UPPERCASE) and calls `verifyCertificate`. Casing and accidental whitespace do not break the match; the day component of the issuance date is intentionally not part of the hash.
+
 Does not verify:
 
 - Real-world holder identity.

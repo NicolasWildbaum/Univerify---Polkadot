@@ -2,6 +2,8 @@
 
 This document defines how credential claims are structured and hashed for on-chain registration and verification in Univerify.
 
+> **Schema version: v2** — strings are normalized (NFC + trim + collapse whitespace + UPPERCASE) and `issuanceDate` is reduced to `YYYY-MM` before hashing. Credentials issued under v1 (`YYYY-MM-DD`, case-sensitive) will not verify under v2 unless they happen to be already canonical. `Univerify.sol` only stores `claimsHash` and is unchanged — the migration is purely off-chain.
+
 ## Why This Matters
 
 The `claimsHash` stored on-chain is the integrity anchor: if a verifier recomputes the hash from the presented claims and it matches, the credential has not been tampered with.
@@ -14,17 +16,39 @@ For this to work, **every party** (issuer, holder, verifier) must hash claims th
 
 A credential contains exactly four claim fields:
 
-| Field             | Type   | Description                                            | Example                          |
-|-------------------|--------|--------------------------------------------------------|----------------------------------|
-| `degreeTitle`     | string | Name of the degree or certificate                      | `"Bachelor of Computer Science"` |
-| `holderName`      | string | Full name of the recipient                             | `"Maria Garcia"`                 |
-| `institutionName` | string | Name of the issuing institution                        | `"Universidad de Buenos Aires"`  |
-| `issuanceDate`    | string | ISO 8601 date of academic issuance (not blockchain tx) | `"2026-03-15"`                   |
+| Field             | Type   | Description                                                   | Example (raw input)              | Example (canonical, hashed)      |
+|-------------------|--------|---------------------------------------------------------------|----------------------------------|----------------------------------|
+| `degreeTitle`     | string | Name of the degree or certificate                             | `"Bachelor of Computer Science"` | `"BACHELOR OF COMPUTER SCIENCE"` |
+| `holderName`      | string | Full name of the recipient                                    | `"Maria Garcia"`                 | `"MARIA GARCIA"`                 |
+| `institutionName` | string | Name of the issuing institution                               | `"Universidad de Buenos Aires"`  | `"UNIVERSIDAD DE BUENOS AIRES"`  |
+| `issuanceDate`    | string | Year-month of academic issuance (`YYYY-MM`; day not retained) | `"2026-03"` or legacy `"2026-03-15"` | `"2026-03"`                  |
 
 ### Important
 
 - `holderName` is **never stored on-chain** — it is part of the off-chain credential only. The hash protects integrity without revealing the name.
 - Fields are ordered **alphabetically by key name** for hashing (see below).
+- The credential JSON the holder receives carries the **canonical** strings (the issuer page bakes them in via `normalizeClaims`) so that re-hashing the JSON is byte-for-byte deterministic.
+
+---
+
+## Normalization (Schema v2)
+
+Both issuer and verifier feed claims through a single normalization step (`normalizeClaims`) before hashing. The web UI surfaces the canonicalized output as a "Canonical form (used for hashing)" panel so both sides can see exactly what they are committing to.
+
+For each string claim (`degreeTitle`, `holderName`, `institutionName`):
+
+1. Unicode NFC (avoids visually-identical but binary-different code points).
+2. Trim leading/trailing whitespace.
+3. Collapse internal runs of whitespace to a single space.
+4. Uppercase (default locale).
+
+For `issuanceDate`:
+
+- Accept `YYYY-MM` (canonical) or legacy `YYYY-MM-DD`. Both produce the same hash.
+- Reject anything else (e.g. `"March 2026"`, `"2026/03"`, `"2026-13"`).
+- The day component is **deliberately discarded** — issuers do not need to remember a day, and verifiers cannot fail integrity over an off-by-one day they no longer recall.
+
+This means a verifier typing `"  ada lovelace "` and `"2026-03-15"` reproduces the same `claimsHash` as the issuer who originally typed `"Ada Lovelace"` and picked `2026-03` from a month picker.
 
 ---
 
@@ -48,6 +72,9 @@ claimsHash = keccak256(
 ```typescript
 import { encodeAbiParameters, keccak256 } from "viem";
 
+// NB: feeding raw (un-normalized) strings here will NOT match what
+// `computeClaimsHash` produces. Always normalize first (see below)
+// or use the shared utility, which normalizes for you.
 const claimsHash = keccak256(
   encodeAbiParameters(
     [
@@ -57,16 +84,18 @@ const claimsHash = keccak256(
       { type: "string", name: "issuanceDate" },
     ],
     [
-      "Bachelor of Computer Science",
-      "Maria Garcia",
-      "Universidad de Buenos Aires",
-      "2026-03-15",
+      "BACHELOR OF COMPUTER SCIENCE",
+      "MARIA GARCIA",
+      "UNIVERSIDAD DE BUENOS AIRES",
+      "2026-03",
     ]
   )
 );
 ```
 
-### Using the shared utility
+### Using the shared utility (recommended)
+
+`computeClaimsHash` runs the input through `normalizeClaims` internally, so you can pass mixed-case strings and a legacy `YYYY-MM-DD` and still get the canonical hash:
 
 ```typescript
 import { computeClaimsHash } from "./src/credential";
@@ -75,7 +104,7 @@ const claimsHash = computeClaimsHash({
   degreeTitle: "Bachelor of Computer Science",
   holderName: "Maria Garcia",
   institutionName: "Universidad de Buenos Aires",
-  issuanceDate: "2026-03-15",
+  issuanceDate: "2026-03", // or "2026-03-15" — both hash to the same value
 });
 ```
 
@@ -131,29 +160,38 @@ const recipientCommitment = computeRecipientCommitment(
 
 ## Verification Flow (Concrete)
 
-Given a presented credential:
+A presented credential carries the **canonical** claims (already normalized), since `buildCredential` bakes them in:
 
 ```json
 {
   "certificateId": "0x...",
   "issuer": "0x...",
   "claims": {
-    "degreeTitle": "Bachelor of Computer Science",
-    "holderName": "Maria Garcia",
-    "institutionName": "Universidad de Buenos Aires",
-    "issuanceDate": "2026-03-15"
+    "degreeTitle": "BACHELOR OF COMPUTER SCIENCE",
+    "holderName": "MARIA GARCIA",
+    "institutionName": "UNIVERSIDAD DE BUENOS AIRES",
+    "issuanceDate": "2026-03"
   },
   "recipientCommitment": "0x..."
 }
 ```
 
-A verifier:
+The frontend offers two complementary verification paths:
 
-1. Extracts the `certificateId` from the presentation.
-2. Recomputes `claimsHash = computeClaimsHash(claims)`.
-3. Calls `verifyCertificate(certificateId, claimsHash)` on-chain.
-4. Checks: `exists && hashMatch && !revoked`.
-5. Optionally checks that `issuer` is part of the federation via `isActiveIssuer(issuer)`. Certificates issued when the issuer was Active remain cryptographically verifiable even if that issuer is later removed by governance; the trust decision at that point is up to the verifier.
+**Existence + validity (NFT-anchored)** — `/verify/cert/<certificateId>`:
+
+1. Anyone with the link reads `certificates(certificateId)` directly.
+2. The page reports existence, issuer wallet, issuer name and current `IssuerStatus`, the soulbound NFT holder, `issuedAt`, and revocation. No claims are involved.
+
+**Information integrity (claims-anchored)** — `/verify` → "Validate Information Integrity":
+
+1. Verifier pastes the public link / certificate id (no need to retype the 64-char hash).
+2. Verifier types the four claims (mixed casing OK; month picker for issuance).
+3. The page computes `claimsHash = computeClaimsHash(claims)` (which normalizes first).
+4. Calls `verifyCertificate(certificateId, claimsHash)` on-chain.
+5. Renders one of `valid | tampered | not-found | revoked`.
+
+Trust decision in either path: `exists && hashMatch && !revoked`, optionally combined with `isActiveIssuer(issuer)`. Certificates issued when the issuer was Active remain cryptographically verifiable even if that issuer is later removed by governance; the trust decision at that point is up to the verifier.
 
 ---
 
