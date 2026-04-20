@@ -15,7 +15,7 @@ import {
 const STATUS_NONE = 0;
 const STATUS_PENDING = 1;
 const STATUS_ACTIVE = 2;
-const STATUS_SUSPENDED = 3;
+const STATUS_REMOVED = 3;
 
 // ── Tuple decoders ───────────────────────────────────────────────────
 
@@ -49,6 +49,24 @@ function readIssuerStruct(raw: unknown) {
 		name: o.name,
 		registeredAt: o.registeredAt,
 		approvalCount: Number(o.approvalCount),
+	};
+}
+
+/** `getRemovalProposal()` — same shape-handling notes as `getIssuer`. */
+function readRemovalProposal(raw: unknown) {
+	const o = raw as {
+		target: Address;
+		proposer: Address;
+		createdAt: bigint;
+		voteCount: number | bigint;
+		executed: boolean;
+	};
+	return {
+		target: o.target,
+		proposer: o.proposer,
+		createdAt: o.createdAt,
+		voteCount: Number(o.voteCount),
+		executed: o.executed,
 	};
 }
 
@@ -129,9 +147,15 @@ async function getConstructorEvents<Args extends Record<string, unknown>>(
 type ApplyArgs = { issuer: Address; name: string; metadataHash: Hex };
 type ApproveArgs = { approver: Address; issuer: Address; approvalCount: number | bigint };
 type IssuerAddrArgs = { issuer: Address };
-type OwnershipArgs = { previousOwner: Address; newOwner: Address };
 type CertIssuedArgs = { certificateId: Hex; issuer: Address; student: Address };
 type CertArgs = { certificateId: Hex; issuer: Address };
+type RemovalCreatedArgs = {
+	proposalId: bigint;
+	target: Address;
+	proposer: Address;
+};
+type RemovalVoteArgs = { proposalId: bigint; voter: Address; voteCount: number | bigint };
+type RemovalExecutedArgs = { issuer: Address; proposalId: bigint };
 
 // ── Test data ────────────────────────────────────────────────────────
 
@@ -153,9 +177,15 @@ const GENESIS_NAMES = ["UDELAR", "University of Montevideo", "University ORT"] a
 const DEFAULT_THRESHOLD = 2;
 
 // ── Fixtures ─────────────────────────────────────────────────────────
+//
+// The first wallet client is the deployer — in the old model it was the
+// contract "owner". With the federated refactor there is no owner, so the
+// deployer is only used as the transaction signer during construction and
+// to wire up the NFT (the one-shot `setCertificateNft` is permissionless and
+// requires only that the NFT's `minter()` points back at the registry).
 
 async function deployWithGenesis() {
-	const [owner, alice, bob, charlie, applicant, stranger, student] =
+	const [deployer, alice, bob, charlie, applicant, stranger, student] =
 		await hre.viem.getWalletClients();
 	const publicClient = await hre.viem.getPublicClient();
 
@@ -171,13 +201,13 @@ async function deployWithGenesis() {
 		univerify.address,
 	]);
 	await univerify.write.setCertificateNft([certificateNft.address], {
-		account: owner.account,
+		account: deployer.account,
 	});
 
 	return {
 		univerify,
 		certificateNft,
-		owner,
+		deployer,
 		alice,
 		bob,
 		charlie,
@@ -204,11 +234,30 @@ describe("Univerify", function () {
 	// ── Deployment / Constructor ─────────────────────────────────────
 
 	describe("Deployment", function () {
-		it("sets deployer as owner", async function () {
-			const { univerify, owner } = await loadFixture(deployWithGenesis);
-			expect(getAddress((await univerify.read.owner()) as Address)).to.equal(
-				getAddress(owner.account.address),
-			);
+		it("exposes no owner or owner-admin surface", async function () {
+			const { univerify } = await loadFixture(deployWithGenesis);
+			const fnNames = (univerify.abi as Abi)
+				.filter(
+					(item): item is Extract<Abi[number], { type: "function" }> =>
+						item.type === "function",
+				)
+				.map((item) => item.name);
+			// Centralised admin surface must be gone.
+			expect(fnNames).to.not.include("owner");
+			expect(fnNames).to.not.include("transferOwnership");
+			expect(fnNames).to.not.include("suspendIssuer");
+			expect(fnNames).to.not.include("unsuspendIssuer");
+
+			// And there must be no lingering centralised admin events either.
+			const eventNames = (univerify.abi as Abi)
+				.filter(
+					(item): item is Extract<Abi[number], { type: "event" }> =>
+						item.type === "event",
+				)
+				.map((item) => item.name);
+			expect(eventNames).to.not.include("OwnershipTransferred");
+			expect(eventNames).to.not.include("IssuerSuspended");
+			expect(eventNames).to.not.include("IssuerUnsuspended");
 		});
 
 		it("stores approvalThreshold as immutable", async function () {
@@ -232,6 +281,11 @@ describe("Univerify", function () {
 			}
 		});
 
+		it("seeds activeIssuerCount to genesis length", async function () {
+			const { univerify, genesis } = await loadFixture(deployWithGenesis);
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(genesis.length);
+		});
+
 		it("populates the enumeration list with every genesis issuer", async function () {
 			const { univerify, genesis } = await loadFixture(deployWithGenesis);
 			expect((await univerify.read.issuerCount()) as bigint).to.equal(BigInt(genesis.length));
@@ -242,23 +296,8 @@ describe("Univerify", function () {
 			}
 		});
 
-		it("emits OwnershipTransferred and one IssuerActivated per genesis issuer", async function () {
-			const { univerify, owner, publicClient, genesis } =
-				await loadFixture(deployWithGenesis);
-
-			const ownershipLogs = await getConstructorEvents<OwnershipArgs>(
-				publicClient,
-				univerify.address,
-				univerify.abi as Abi,
-				"OwnershipTransferred",
-			);
-			expect(ownershipLogs).to.have.lengthOf(1);
-			expect(getAddress(ownershipLogs[0].args.previousOwner)).to.equal(
-				getAddress(ZERO_ADDRESS),
-			);
-			expect(getAddress(ownershipLogs[0].args.newOwner)).to.equal(
-				getAddress(owner.account.address),
-			);
+		it("emits one IssuerActivated per genesis issuer", async function () {
+			const { univerify, publicClient, genesis } = await loadFixture(deployWithGenesis);
 
 			const activatedLogs = await getConstructorEvents<IssuerAddrArgs>(
 				publicClient,
@@ -410,6 +449,14 @@ describe("Univerify", function () {
 			);
 		});
 
+		it("does not change activeIssuerCount on application", async function () {
+			const { univerify, applicant, genesis } = await loadFixture(deployWithGenesis);
+			await univerify.write.applyAsIssuer(["Applicant University", metaApplicant], {
+				account: applicant.account,
+			});
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(genesis.length);
+		});
+
 		it("appends the applicant to the enumeration list", async function () {
 			const { univerify, applicant, genesis } = await loadFixture(deployWithGenesis);
 			const before = (await univerify.read.issuerCount()) as bigint;
@@ -481,14 +528,178 @@ describe("Univerify", function () {
 			);
 		});
 
-		it("reverts IssuerAlreadyExists when a Suspended issuer re-applies", async function () {
-			const { univerify, owner, alice } = await loadFixture(deployWithGenesis);
-			await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
+		it("allows a governance-removed issuer to re-apply and returns them to Pending", async function () {
+			// Remove Alice through governance (threshold=2 → Bob proposes, Charlie votes).
+			const { univerify, alice, bob, charlie, publicClient } =
+				await loadFixture(deployWithGenesis);
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
 			});
+			const proposalId = (await univerify.read.openRemovalProposal([
+				alice.account.address,
+			])) as bigint;
+			await univerify.write.voteForRemoval([proposalId], { account: charlie.account });
+
+			const listLengthBefore = (await univerify.read.issuerCount()) as bigint;
+			const epochBefore = (await univerify.read.issuerEpoch([
+				alice.account.address,
+			])) as number | bigint;
+
+			const reapplyHash = await univerify.write.applyAsIssuer(
+				["UDELAR-reborn", metaUdelar],
+				{ account: alice.account },
+			);
+
+			// Status is back to Pending with a fresh approval counter and the
+			// new profile metadata taking over the existing slot.
+			const profile = readIssuerStruct(
+				(await univerify.read.getIssuer([alice.account.address])) as unknown,
+			);
+			expect(profile.status).to.equal(STATUS_PENDING);
+			expect(profile.approvalCount).to.equal(0);
+			expect(profile.name).to.equal("UDELAR-reborn");
+
+			// Epoch must have advanced so prior approvals cannot leak in.
+			const epochAfter = (await univerify.read.issuerEpoch([
+				alice.account.address,
+			])) as number | bigint;
+			expect(Number(epochAfter)).to.equal(Number(epochBefore) + 1);
+
+			// Enumeration must not be duplicated — the same slot is reused.
+			const listLengthAfter = (await univerify.read.issuerCount()) as bigint;
+			expect(listLengthAfter).to.equal(listLengthBefore);
+
+			// Event is re-emitted with the new profile data.
+			const receipt = await publicClient.waitForTransactionReceipt({ hash: reapplyHash });
+			const applied = parseEventLogs({
+				abi: univerify.abi as unknown as Abi,
+				eventName: "IssuerApplied",
+				logs: receipt.logs as Log[],
+			}) as unknown as Array<{ args: ApplyArgs }>;
+			expect(applied).to.have.length(1);
+			expect(applied[0].args.issuer.toLowerCase()).to.equal(
+				alice.account.address.toLowerCase(),
+			);
+			expect(applied[0].args.name).to.equal("UDELAR-reborn");
+		});
+
+		it("resets approvals on re-application: prior approvers can vote again, old approvals don't count", async function () {
+			// Alice is removed, then re-applies; the two other genesis issuers
+			// (Bob, Charlie) must be able to approve her fresh application even
+			// though they had approved her — implicitly, via genesis — before.
+			const { univerify, alice, bob, charlie } = await loadFixture(deployWithGenesis);
+
+			// Remove Alice.
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
+			});
+			const proposalId = (await univerify.read.openRemovalProposal([
+				alice.account.address,
+			])) as bigint;
+			await univerify.write.voteForRemoval([proposalId], { account: charlie.account });
+
+			// Re-apply.
+			await univerify.write.applyAsIssuer(["UDELAR-reborn", metaUdelar], {
+				account: alice.account,
+			});
+
+			// hasApproved now reflects the current (new) round for Alice — none
+			// of the prior round's approvals carry over.
+			expect(
+				(await univerify.read.hasApproved([
+					alice.account.address,
+					bob.account.address,
+				])) as boolean,
+			).to.equal(false);
+			expect(
+				(await univerify.read.hasApproved([
+					alice.account.address,
+					charlie.account.address,
+				])) as boolean,
+			).to.equal(false);
+
+			// Bob and Charlie can approve again; on the second approval (threshold=2)
+			// Alice is promoted back to Active and activeIssuerCount is restored.
+			await univerify.write.approveIssuer([alice.account.address], {
+				account: bob.account,
+			});
+			await univerify.write.approveIssuer([alice.account.address], {
+				account: charlie.account,
+			});
+
+			const profile = readIssuerStruct(
+				(await univerify.read.getIssuer([alice.account.address])) as unknown,
+			);
+			expect(profile.status).to.equal(STATUS_ACTIVE);
+			expect(profile.approvalCount).to.equal(2);
+
+			const active = (await univerify.read.activeIssuerCount()) as number | bigint;
+			expect(Number(active)).to.equal(3);
+		});
+
+		it("supports multiple remove/re-apply cycles with independent approval rounds", async function () {
+			const { univerify, alice, bob, charlie } = await loadFixture(deployWithGenesis);
+
+			async function removeAlice() {
+				await univerify.write.proposeRemoval([alice.account.address], {
+					account: bob.account,
+				});
+				const id = (await univerify.read.openRemovalProposal([
+					alice.account.address,
+				])) as bigint;
+				await univerify.write.voteForRemoval([id], { account: charlie.account });
+			}
+
+			// Round 1: remove → re-apply → re-activate.
+			await removeAlice();
+			await univerify.write.applyAsIssuer(["UDELAR-r1", metaUdelar], {
+				account: alice.account,
+			});
+			await univerify.write.approveIssuer([alice.account.address], {
+				account: bob.account,
+			});
+			await univerify.write.approveIssuer([alice.account.address], {
+				account: charlie.account,
+			});
+
+			// Round 2: remove again → re-apply again.
+			await removeAlice();
+			await univerify.write.applyAsIssuer(["UDELAR-r2", metaUdelar], {
+				account: alice.account,
+			});
+			const epoch = (await univerify.read.issuerEpoch([
+				alice.account.address,
+			])) as number | bigint;
+			expect(Number(epoch)).to.equal(2);
+
+			// New round is a clean slate: no approver has approved yet this round.
+			expect(
+				(await univerify.read.hasApproved([
+					alice.account.address,
+					bob.account.address,
+				])) as boolean,
+			).to.equal(false);
+		});
+
+		it("reverts IssuerAlreadyExists when a Removed issuer re-applies while status is Pending again", async function () {
+			// After a re-application, the second apply in the same round must
+			// still be rejected — epoch-bumping is a one-shot per transition.
+			const { univerify, alice, bob, charlie } = await loadFixture(deployWithGenesis);
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
+			});
+			const proposalId = (await univerify.read.openRemovalProposal([
+				alice.account.address,
+			])) as bigint;
+			await univerify.write.voteForRemoval([proposalId], { account: charlie.account });
+
+			await univerify.write.applyAsIssuer(["UDELAR-reborn", metaUdelar], {
+				account: alice.account,
+			});
+
 			await expectRevert(
 				() =>
-					univerify.write.applyAsIssuer(["UDELAR-again", metaUdelar], {
+					univerify.write.applyAsIssuer(["UDELAR-dup", metaUdelar], {
 						account: alice.account,
 					}),
 				"IssuerAlreadyExists",
@@ -551,6 +762,9 @@ describe("Univerify", function () {
 			expect(profile.approvalCount).to.equal(DEFAULT_THRESHOLD);
 			expect(await univerify.read.isActiveIssuer([applicant.account.address])).to.equal(true);
 
+			// activeIssuerCount grew by one (from 3 genesis to 4).
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(4);
+
 			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
 			const activatedLogs = parseLogs<IssuerAddrArgs>(
 				univerify.abi as Abi,
@@ -592,13 +806,19 @@ describe("Univerify", function () {
 			);
 		});
 
-		it("reverts NotActiveIssuer when a Suspended issuer tries to approve", async function () {
-			const { univerify, owner, alice, applicant } = await loadFixture(
+		it("reverts NotActiveIssuer when a governance-removed issuer tries to approve", async function () {
+			// Remove Alice by governance (threshold=2 → Bob proposes, Charlie votes).
+			const { univerify, alice, bob, charlie, applicant } = await loadFixture(
 				deployWithPendingApplicant,
 			);
-			await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
 			});
+			const proposalId = (await univerify.read.openRemovalProposal([
+				alice.account.address,
+			])) as bigint;
+			await univerify.write.voteForRemoval([proposalId], { account: charlie.account });
+
 			await expectRevert(
 				() =>
 					univerify.write.approveIssuer([applicant.account.address], {
@@ -641,20 +861,6 @@ describe("Univerify", function () {
 			);
 		});
 
-		it("reverts IssuerNotPending when candidate is Suspended", async function () {
-			const { univerify, owner, alice, bob } = await loadFixture(deployWithGenesis);
-			await univerify.write.suspendIssuer([bob.account.address], {
-				account: owner.account,
-			});
-			await expectRevert(
-				() =>
-					univerify.write.approveIssuer([bob.account.address], {
-						account: alice.account,
-					}),
-				"IssuerNotPending",
-			);
-		});
-
 		it("reverts AlreadyApproved on a second approval from the same issuer", async function () {
 			const { univerify, alice, applicant } = await loadFixture(deployWithPendingApplicant);
 			await univerify.write.approveIssuer([applicant.account.address], {
@@ -669,16 +875,22 @@ describe("Univerify", function () {
 			);
 		});
 
-		it("preserves historical approval records after the approver is suspended", async function () {
-			const { univerify, owner, alice, applicant } = await loadFixture(
+		it("preserves historical approval records after the approver is removed", async function () {
+			const { univerify, alice, bob, charlie, applicant } = await loadFixture(
 				deployWithPendingApplicant,
 			);
 			await univerify.write.approveIssuer([applicant.account.address], {
 				account: alice.account,
 			});
-			await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
+			// Remove Alice by governance.
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
 			});
+			const proposalId = (await univerify.read.openRemovalProposal([
+				alice.account.address,
+			])) as bigint;
+			await univerify.write.voteForRemoval([proposalId], { account: charlie.account });
+
 			expect(
 				await univerify.read.hasApproved([
 					applicant.account.address,
@@ -692,196 +904,387 @@ describe("Univerify", function () {
 		});
 	});
 
-	// ── Governance: emergency admin ──────────────────────────────────
+	// ── Governance: removal proposals & voting ───────────────────────
 
-	describe("suspendIssuer / unsuspendIssuer", function () {
-		it("owner can suspend an Active issuer and emits IssuerSuspended", async function () {
-			const { univerify, owner, alice, publicClient } = await loadFixture(deployWithGenesis);
-			const txHash = await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
+	describe("proposeRemoval", function () {
+		it("creates a proposal with the proposer's own vote counted", async function () {
+			const { univerify, alice, bob, publicClient } = await loadFixture(deployWithGenesis);
+			const txHash = await univerify.write.proposeRemoval([bob.account.address], {
+				account: alice.account,
 			});
-			const profile = readIssuerStruct(
-				(await univerify.read.getIssuer([alice.account.address])) as readonly unknown[],
+			const proposalId = 1n; // first proposal id minted
+			expect((await univerify.read.removalProposalCount()) as bigint).to.equal(1n);
+			expect(
+				(await univerify.read.openRemovalProposal([bob.account.address])) as bigint,
+			).to.equal(proposalId);
+
+			const p = readRemovalProposal(
+				(await univerify.read.getRemovalProposal([proposalId])) as readonly unknown[],
 			);
-			expect(profile.status).to.equal(STATUS_SUSPENDED);
-			expect(await univerify.read.isActiveIssuer([alice.account.address])).to.equal(false);
+			expect(getAddress(p.target)).to.equal(getAddress(bob.account.address));
+			expect(getAddress(p.proposer)).to.equal(getAddress(alice.account.address));
+			expect(p.voteCount).to.equal(1);
+			expect(p.executed).to.equal(false);
+			expect(p.createdAt > 0n).to.equal(true);
+
+			expect(
+				await univerify.read.hasVotedOnRemoval([proposalId, alice.account.address]),
+			).to.equal(true);
+			expect(
+				await univerify.read.hasVotedOnRemoval([proposalId, bob.account.address]),
+			).to.equal(false);
 
 			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-			const logs = parseLogs<IssuerAddrArgs>(
+			const createdLogs = parseLogs<RemovalCreatedArgs>(
 				univerify.abi as Abi,
 				receipt.logs,
-				"IssuerSuspended",
+				"RemovalProposalCreated",
 			);
-			expect(logs).to.have.lengthOf(1);
-			expect(getAddress(logs[0].args.issuer)).to.equal(getAddress(alice.account.address));
-		});
-
-		it("owner can unsuspend a Suspended issuer and emits IssuerUnsuspended", async function () {
-			const { univerify, owner, alice, publicClient } = await loadFixture(deployWithGenesis);
-			await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
-			});
-			const txHash = await univerify.write.unsuspendIssuer([alice.account.address], {
-				account: owner.account,
-			});
-			const profile = readIssuerStruct(
-				(await univerify.read.getIssuer([alice.account.address])) as readonly unknown[],
+			expect(createdLogs).to.have.lengthOf(1);
+			expect(createdLogs[0].args.proposalId).to.equal(proposalId);
+			expect(getAddress(createdLogs[0].args.target)).to.equal(
+				getAddress(bob.account.address),
 			);
-			expect(profile.status).to.equal(STATUS_ACTIVE);
+			expect(getAddress(createdLogs[0].args.proposer)).to.equal(
+				getAddress(alice.account.address),
+			);
 
-			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-			const logs = parseLogs<IssuerAddrArgs>(
+			const voteLogs = parseLogs<RemovalVoteArgs>(
 				univerify.abi as Abi,
 				receipt.logs,
-				"IssuerUnsuspended",
+				"RemovalVoteCast",
 			);
-			expect(logs).to.have.lengthOf(1);
-			expect(getAddress(logs[0].args.issuer)).to.equal(getAddress(alice.account.address));
+			expect(voteLogs).to.have.lengthOf(1);
+			expect(voteLogs[0].args.proposalId).to.equal(proposalId);
+			expect(getAddress(voteLogs[0].args.voter)).to.equal(
+				getAddress(alice.account.address),
+			);
+			expect(Number(voteLogs[0].args.voteCount)).to.equal(1);
 		});
 
-		it("reverts NotOwner when a non-owner tries to suspend", async function () {
-			const { univerify, alice, bob } = await loadFixture(deployWithGenesis);
+		it("reverts NotActiveIssuer when a non-active account proposes", async function () {
+			const { univerify, stranger, alice } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
-					univerify.write.suspendIssuer([bob.account.address], {
+					univerify.write.proposeRemoval([alice.account.address], {
+						account: stranger.account,
+					}),
+				"NotActiveIssuer",
+			);
+		});
+
+		it("reverts NotActiveIssuer when a Pending applicant proposes removal", async function () {
+			const { univerify, applicant, alice } = await loadFixture(
+				deployWithPendingApplicant,
+			);
+			await expectRevert(
+				() =>
+					univerify.write.proposeRemoval([alice.account.address], {
+						account: applicant.account,
+					}),
+				"NotActiveIssuer",
+			);
+		});
+
+		it("reverts CannotProposeSelfRemoval", async function () {
+			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			await expectRevert(
+				() =>
+					univerify.write.proposeRemoval([alice.account.address], {
 						account: alice.account,
 					}),
-				"NotOwner",
+				"CannotProposeSelfRemoval",
 			);
 		});
 
-		it("reverts NotOwner when a non-owner tries to unsuspend", async function () {
-			const { univerify, owner, alice, bob } = await loadFixture(deployWithGenesis);
-			await univerify.write.suspendIssuer([bob.account.address], {
-				account: owner.account,
-			});
-			await expectRevert(
-				() =>
-					univerify.write.unsuspendIssuer([bob.account.address], {
-						account: alice.account,
-					}),
-				"NotOwner",
-			);
-		});
-
-		it("reverts IssuerNotFound when suspending an unknown address", async function () {
-			const { univerify, owner, stranger } = await loadFixture(deployWithGenesis);
-			await expectRevert(
-				() =>
-					univerify.write.suspendIssuer([stranger.account.address], {
-						account: owner.account,
-					}),
-				"IssuerNotFound",
-			);
-		});
-
-		it("reverts IssuerNotActive when suspending a Pending applicant", async function () {
-			const { univerify, owner, applicant } = await loadFixture(deployWithPendingApplicant);
-			await expectRevert(
-				() =>
-					univerify.write.suspendIssuer([applicant.account.address], {
-						account: owner.account,
-					}),
-				"IssuerNotActive",
-			);
-		});
-
-		it("reverts IssuerNotActive on double suspension", async function () {
-			const { univerify, owner, alice } = await loadFixture(deployWithGenesis);
-			await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
-			});
-			await expectRevert(
-				() =>
-					univerify.write.suspendIssuer([alice.account.address], {
-						account: owner.account,
-					}),
-				"IssuerNotActive",
-			);
-		});
-
-		it("reverts IssuerNotFound when unsuspending an unknown address", async function () {
-			const { univerify, owner, stranger } = await loadFixture(deployWithGenesis);
-			await expectRevert(
-				() =>
-					univerify.write.unsuspendIssuer([stranger.account.address], {
-						account: owner.account,
-					}),
-				"IssuerNotFound",
-			);
-		});
-
-		it("reverts IssuerNotSuspended when unsuspending an Active issuer", async function () {
-			const { univerify, owner, alice } = await loadFixture(deployWithGenesis);
-			await expectRevert(
-				() =>
-					univerify.write.unsuspendIssuer([alice.account.address], {
-						account: owner.account,
-					}),
-				"IssuerNotSuspended",
-			);
-		});
-	});
-
-	describe("transferOwnership", function () {
-		it("transfers ownership and emits OwnershipTransferred", async function () {
-			const { univerify, owner, stranger, publicClient } =
-				await loadFixture(deployWithGenesis);
-			const txHash = await univerify.write.transferOwnership([stranger.account.address], {
-				account: owner.account,
-			});
-			expect(getAddress((await univerify.read.owner()) as Address)).to.equal(
-				getAddress(stranger.account.address),
-			);
-
-			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-			const logs = parseLogs<OwnershipArgs>(
-				univerify.abi as Abi,
-				receipt.logs,
-				"OwnershipTransferred",
-			);
-			expect(logs).to.have.lengthOf(1);
-			expect(getAddress(logs[0].args.previousOwner)).to.equal(
-				getAddress(owner.account.address),
-			);
-			expect(getAddress(logs[0].args.newOwner)).to.equal(
-				getAddress(stranger.account.address),
-			);
-		});
-
-		it("reverts NotOwner when called by a non-owner", async function () {
+		it("reverts IssuerNotFound when target is unknown", async function () {
 			const { univerify, alice, stranger } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
-					univerify.write.transferOwnership([stranger.account.address], {
+					univerify.write.proposeRemoval([stranger.account.address], {
 						account: alice.account,
 					}),
-				"NotOwner",
+				"IssuerNotFound",
 			);
 		});
 
-		it("reverts ZeroAddress on zero-address transfer target", async function () {
-			const { univerify, owner } = await loadFixture(deployWithGenesis);
+		it("reverts IssuerNotActive when target is Pending", async function () {
+			const { univerify, alice, applicant } = await loadFixture(
+				deployWithPendingApplicant,
+			);
 			await expectRevert(
 				() =>
-					univerify.write.transferOwnership([ZERO_ADDRESS], {
-						account: owner.account,
+					univerify.write.proposeRemoval([applicant.account.address], {
+						account: alice.account,
 					}),
-				"ZeroAddress",
+				"IssuerNotActive",
 			);
 		});
 
-		it("previous owner loses admin after transfer", async function () {
-			const { univerify, owner, alice, stranger } = await loadFixture(deployWithGenesis);
-			await univerify.write.transferOwnership([stranger.account.address], {
-				account: owner.account,
+		it("reverts RemovalProposalAlreadyOpen on duplicate proposal for the same target", async function () {
+			const { univerify, alice, bob, charlie } = await loadFixture(deployWithGenesis);
+			await univerify.write.proposeRemoval([bob.account.address], {
+				account: alice.account,
 			});
 			await expectRevert(
 				() =>
-					univerify.write.suspendIssuer([alice.account.address], {
-						account: owner.account,
+					univerify.write.proposeRemoval([bob.account.address], {
+						account: charlie.account,
 					}),
-				"NotOwner",
+				"RemovalProposalAlreadyOpen",
+			);
+		});
+
+		it("executes immediately when threshold is 1 (single-genesis federation)", async function () {
+			const [, alice, bob, charlie] = await hre.viem.getWalletClients();
+
+			// Federation of 2 where threshold is 1 — a single vote is enough.
+			const genesis = [
+				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
+				{ account: bob.account.address, name: "B", metadataHash: metaUm },
+			];
+			const u = await hre.viem.deployContract("Univerify", [genesis, 1]);
+			// Wire a dummy NFT so the deployment is complete — not needed for this
+			// test, but keeps the fixture symmetric with `deployWithGenesis`.
+			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
+			await u.write.setCertificateNft([nft.address], { account: charlie.account });
+
+			const txHash = await u.write.proposeRemoval([bob.account.address], {
+				account: alice.account,
+			});
+			const client = await hre.viem.getPublicClient();
+			const receipt = await client.waitForTransactionReceipt({ hash: txHash });
+
+			// IssuerRemoved fired in the same tx.
+			const removedLogs = parseLogs<RemovalExecutedArgs>(
+				u.abi as Abi,
+				receipt.logs,
+				"IssuerRemoved",
+			);
+			expect(removedLogs).to.have.lengthOf(1);
+			expect(getAddress(removedLogs[0].args.issuer)).to.equal(
+				getAddress(bob.account.address),
+			);
+
+			const profile = readIssuerStruct(
+				(await u.read.getIssuer([bob.account.address])) as readonly unknown[],
+			);
+			expect(profile.status).to.equal(STATUS_REMOVED);
+			expect(await u.read.isActiveIssuer([bob.account.address])).to.equal(false);
+			expect(Number(await u.read.activeIssuerCount())).to.equal(1);
+
+			// Proposal slot is cleared so a future target can reuse it (not
+			// that `bob` can be re-proposed — they're no longer Active — but
+			// the invariant is what the frontend relies on).
+			expect(
+				(await u.read.openRemovalProposal([bob.account.address])) as bigint,
+			).to.equal(0n);
+		});
+	});
+
+	describe("voteForRemoval", function () {
+		it("counts a second vote and executes once threshold is reached", async function () {
+			const { univerify, alice, bob, charlie, publicClient } =
+				await loadFixture(deployWithGenesis);
+
+			await univerify.write.proposeRemoval([charlie.account.address], {
+				account: alice.account,
+			});
+			const proposalId = 1n;
+
+			const txHash = await univerify.write.voteForRemoval([proposalId], {
+				account: bob.account,
+			});
+
+			const p = readRemovalProposal(
+				(await univerify.read.getRemovalProposal([proposalId])) as readonly unknown[],
+			);
+			expect(p.voteCount).to.equal(DEFAULT_THRESHOLD);
+			expect(p.executed).to.equal(true);
+
+			const profile = readIssuerStruct(
+				(await univerify.read.getIssuer([charlie.account.address])) as readonly unknown[],
+			);
+			expect(profile.status).to.equal(STATUS_REMOVED);
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(2);
+			expect(
+				(await univerify.read.openRemovalProposal([charlie.account.address])) as bigint,
+			).to.equal(0n);
+
+			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+			const voteLogs = parseLogs<RemovalVoteArgs>(
+				univerify.abi as Abi,
+				receipt.logs,
+				"RemovalVoteCast",
+			);
+			expect(voteLogs).to.have.lengthOf(1);
+			expect(Number(voteLogs[0].args.voteCount)).to.equal(DEFAULT_THRESHOLD);
+
+			const removedLogs = parseLogs<RemovalExecutedArgs>(
+				univerify.abi as Abi,
+				receipt.logs,
+				"IssuerRemoved",
+			);
+			expect(removedLogs).to.have.lengthOf(1);
+			expect(removedLogs[0].args.proposalId).to.equal(proposalId);
+			expect(getAddress(removedLogs[0].args.issuer)).to.equal(
+				getAddress(charlie.account.address),
+			);
+		});
+
+		it("reverts RemovalProposalNotFound for an unknown proposal id", async function () {
+			const { univerify, alice } = await loadFixture(deployWithGenesis);
+			await expectRevert(
+				() =>
+					univerify.write.voteForRemoval([999n], {
+						account: alice.account,
+					}),
+				"RemovalProposalNotFound",
+			);
+		});
+
+		it("reverts NotActiveIssuer when a non-active account tries to vote", async function () {
+			const { univerify, alice, bob, stranger } = await loadFixture(deployWithGenesis);
+			await univerify.write.proposeRemoval([bob.account.address], {
+				account: alice.account,
+			});
+			await expectRevert(
+				() =>
+					univerify.write.voteForRemoval([1n], {
+						account: stranger.account,
+					}),
+				"NotActiveIssuer",
+			);
+		});
+
+		it("reverts AlreadyVotedForRemoval when the proposer votes again", async function () {
+			const { univerify, alice, bob } = await loadFixture(deployWithGenesis);
+			await univerify.write.proposeRemoval([bob.account.address], {
+				account: alice.account,
+			});
+			await expectRevert(
+				() =>
+					univerify.write.voteForRemoval([1n], {
+						account: alice.account,
+					}),
+				"AlreadyVotedForRemoval",
+			);
+		});
+
+		it("reverts CannotVoteOnOwnRemoval when the target tries to vote", async function () {
+			// 4-issuer federation (threshold 2) so charlie isn't enough on his
+			// own to execute before alice gets a chance to attempt voting.
+			const [deployer, alice, bob, charlie, dave] = await hre.viem.getWalletClients();
+			const genesis = [
+				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
+				{ account: bob.account.address, name: "B", metadataHash: metaUm },
+				{ account: charlie.account.address, name: "C", metadataHash: metaOrt },
+				{ account: dave.account.address, name: "D", metadataHash: metaApplicant },
+			];
+			const u = await hre.viem.deployContract("Univerify", [genesis, 3]);
+			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
+			await u.write.setCertificateNft([nft.address], { account: deployer.account });
+
+			await u.write.proposeRemoval([alice.account.address], { account: bob.account });
+			await expectRevert(
+				() =>
+					u.write.voteForRemoval([1n], {
+						account: alice.account,
+					}),
+				"CannotVoteOnOwnRemoval",
+			);
+		});
+
+		it("reverts AlreadyVotedForRemoval on duplicate vote from the same voter", async function () {
+			// 4-issuer federation with threshold 3 so a second vote doesn't
+			// immediately execute and the third voter gets to attempt a
+			// duplicate.
+			const [deployer, alice, bob, charlie, dave] = await hre.viem.getWalletClients();
+			const genesis = [
+				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
+				{ account: bob.account.address, name: "B", metadataHash: metaUm },
+				{ account: charlie.account.address, name: "C", metadataHash: metaOrt },
+				{ account: dave.account.address, name: "D", metadataHash: metaApplicant },
+			];
+			const u = await hre.viem.deployContract("Univerify", [genesis, 3]);
+			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
+			await u.write.setCertificateNft([nft.address], { account: deployer.account });
+
+			await u.write.proposeRemoval([dave.account.address], { account: alice.account });
+			await u.write.voteForRemoval([1n], { account: bob.account });
+			await expectRevert(
+				() =>
+					u.write.voteForRemoval([1n], {
+						account: bob.account,
+					}),
+				"AlreadyVotedForRemoval",
+			);
+		});
+
+		it("reverts RemovalProposalAlreadyExecuted after execution", async function () {
+			// 4-issuer federation, threshold 2, so we execute and a fourth issuer
+			// then tries to pile on a late vote.
+			const [deployer, alice, bob, charlie, dave] = await hre.viem.getWalletClients();
+			const genesis = [
+				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
+				{ account: bob.account.address, name: "B", metadataHash: metaUm },
+				{ account: charlie.account.address, name: "C", metadataHash: metaOrt },
+				{ account: dave.account.address, name: "D", metadataHash: metaApplicant },
+			];
+			const u = await hre.viem.deployContract("Univerify", [genesis, 2]);
+			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
+			await u.write.setCertificateNft([nft.address], { account: deployer.account });
+
+			await u.write.proposeRemoval([dave.account.address], { account: alice.account });
+			await u.write.voteForRemoval([1n], { account: bob.account }); // executes
+			await expectRevert(
+				() =>
+					u.write.voteForRemoval([1n], {
+						account: charlie.account,
+					}),
+				"RemovalProposalAlreadyExecuted",
+			);
+		});
+
+		it("keeps activeIssuerCount consistent after several removals", async function () {
+			const { univerify, alice, bob, charlie, genesis } =
+				await loadFixture(deployWithGenesis);
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(genesis.length);
+
+			// Remove bob.
+			await univerify.write.proposeRemoval([bob.account.address], {
+				account: alice.account,
+			});
+			await univerify.write.voteForRemoval([1n], { account: charlie.account });
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(
+				genesis.length - 1,
+			);
+
+			// Now only alice + charlie are active. threshold is 2. They can
+			// still remove each other by unanimity — alice proposes charlie,
+			// charlie can't vote on own removal, but proposer + alice's vote
+			// is already 1. We need a second active voter. With only 2 active
+			// issuers, removal is possible only if both agree (majority).
+			// Here the proposer is already one of the two, so no second
+			// voter exists other than the target. Test that the proposal
+			// stays open (and can't be voted on because nobody else can
+			// contribute).
+			await univerify.write.proposeRemoval([charlie.account.address], {
+				account: alice.account,
+			});
+			const p = readRemovalProposal(
+				(await univerify.read.getRemovalProposal([2n])) as readonly unknown[],
+			);
+			expect(p.executed).to.equal(false);
+			expect(p.voteCount).to.equal(1);
+
+			// Charlie can't vote on own removal. Stalemate.
+			await expectRevert(
+				() =>
+					univerify.write.voteForRemoval([2n], {
+						account: charlie.account,
+					}),
+				"CannotVoteOnOwnRemoval",
 			);
 		});
 	});
@@ -966,11 +1369,13 @@ describe("Univerify", function () {
 			);
 		});
 
-		it("reverts NotActiveIssuer when caller has been suspended", async function () {
-			const { univerify, owner, alice, student } = await loadFixture(deployWithGenesis);
-			await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
+		it("reverts NotActiveIssuer when caller has been removed by governance", async function () {
+			const { univerify, alice, bob, charlie, student } =
+				await loadFixture(deployWithGenesis);
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
 			});
+			await univerify.write.voteForRemoval([1n], { account: charlie.account });
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
@@ -1089,25 +1494,65 @@ describe("Univerify", function () {
 		});
 
 		it("reverts NftAlreadySet on second wire-up", async function () {
-			const { univerify, certificateNft, owner } = await loadFixture(deployWithGenesis);
+			const { univerify, certificateNft, deployer } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
 					univerify.write.setCertificateNft([certificateNft.address], {
-						account: owner.account,
+						account: deployer.account,
 					}),
 				"NftAlreadySet",
 			);
 		});
 
-		it("reverts NotOwner when called by a non-owner", async function () {
-			const { univerify, certificateNft, alice } = await loadFixture(deployWithGenesis);
-			// Re-set is owner-only even though it would also fail with NftAlreadySet.
+		it("reverts ZeroAddress when wiring the zero address", async function () {
+			const [, alice] = await hre.viem.getWalletClients();
+			const genesis = [
+				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
+			];
+			const univerify = await hre.viem.deployContract("Univerify", [genesis, 1]);
 			await expectRevert(
 				() =>
-					univerify.write.setCertificateNft([certificateNft.address], {
+					univerify.write.setCertificateNft([ZERO_ADDRESS], {
 						account: alice.account,
 					}),
-				"NotOwner",
+				"ZeroAddress",
+			);
+		});
+
+		it("reverts NftMinterMismatch when wiring an NFT whose minter is a different registry", async function () {
+			// Two separate Univerify contracts; wire NFT bound to A into B.
+			const [deployer, alice] = await hre.viem.getWalletClients();
+			const genesis = [
+				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
+			];
+			const uA = await hre.viem.deployContract("Univerify", [genesis, 1]);
+			const uB = await hre.viem.deployContract("Univerify", [genesis, 1]);
+			const nftForA = await hre.viem.deployContract("CertificateNft", [
+				uA.address,
+				uA.address,
+			]);
+			await expectRevert(
+				() =>
+					uB.write.setCertificateNft([nftForA.address], {
+						account: deployer.account,
+					}),
+				"NftMinterMismatch",
+			);
+		});
+
+		it("allows any caller to wire the NFT (no privileged configurer)", async function () {
+			// Deploy a fresh Univerify, then have a non-genesis wallet do the wiring.
+			const [, alice, bob, , , stranger] = await hre.viem.getWalletClients();
+			const genesis = [
+				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
+				{ account: bob.account.address, name: "B", metadataHash: metaUm },
+			];
+			const u = await hre.viem.deployContract("Univerify", [genesis, 2]);
+			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
+			// `stranger` is neither a genesis issuer nor the deployer.
+			await u.write.setCertificateNft([nft.address], { account: stranger.account });
+			expect(getAddress((await u.read.certificateNft()) as Address)).to.equal(
+				getAddress(nft.address),
 			);
 		});
 	});
@@ -1197,16 +1642,19 @@ describe("Univerify", function () {
 			);
 		});
 
-		it("reverts NotActiveIssuer when the original issuer has been suspended", async function () {
-			// Documents the intentional design: suspended issuers cannot revoke their own certs.
-			const { univerify, owner, alice, student } = await loadFixture(deployWithGenesis);
+		it("reverts NotActiveIssuer when the original issuer has been removed by governance", async function () {
+			// Documents the intentional design: a governance-removed issuer
+			// cannot revoke their own past certificates.
+			const { univerify, alice, bob, charlie, student } =
+				await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
 				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
-			await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
 			});
+			await univerify.write.voteForRemoval([1n], { account: charlie.account });
 			await expectRevert(
 				() =>
 					univerify.write.revokeCertificate([certificateId], {
@@ -1291,16 +1739,20 @@ describe("Univerify", function () {
 			expect(revoked).to.equal(true);
 		});
 
-		it("still verifies a certificate issued by an issuer that was later suspended", async function () {
-			// The contract deliberately does not track issuer status on the certificate itself.
-			const { univerify, owner, alice, student } = await loadFixture(deployWithGenesis);
+		it("still verifies a certificate issued by an issuer that was later removed", async function () {
+			// The contract deliberately does not track issuer status on the
+			// certificate itself, so governance changes never invalidate past
+			// issuance.
+			const { univerify, alice, bob, charlie, student } =
+				await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
 				[certificateId, claimsHash, recipientCommitment, student.account.address],
 				{ account: alice.account },
 			);
-			await univerify.write.suspendIssuer([alice.account.address], {
-				account: owner.account,
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
 			});
+			await univerify.write.voteForRemoval([1n], { account: charlie.account });
 			const [exists, certIssuer, hashMatch, revoked] =
 				(await univerify.read.verifyCertificate([certificateId, claimsHash])) as readonly [
 					boolean,
@@ -1333,7 +1785,7 @@ describe("Univerify", function () {
 		});
 
 		it("isActiveIssuer is true only for Active issuers", async function () {
-			const { univerify, owner, alice, bob, applicant, stranger } = await loadFixture(
+			const { univerify, alice, bob, charlie, applicant, stranger } = await loadFixture(
 				deployWithPendingApplicant,
 			);
 			expect(await univerify.read.isActiveIssuer([alice.account.address])).to.equal(true);
@@ -1341,9 +1793,12 @@ describe("Univerify", function () {
 				false,
 			);
 			expect(await univerify.read.isActiveIssuer([stranger.account.address])).to.equal(false);
-			await univerify.write.suspendIssuer([bob.account.address], {
-				account: owner.account,
+
+			// Remove bob by governance.
+			await univerify.write.proposeRemoval([bob.account.address], {
+				account: alice.account,
 			});
+			await univerify.write.voteForRemoval([1n], { account: charlie.account });
 			expect(await univerify.read.isActiveIssuer([bob.account.address])).to.equal(false);
 		});
 
@@ -1355,6 +1810,17 @@ describe("Univerify", function () {
 					alice.account.address,
 				]),
 			).to.equal(false);
+		});
+
+		it("getRemovalProposal returns a zeroed struct for unknown proposal ids", async function () {
+			const { univerify } = await loadFixture(deployWithGenesis);
+			const p = readRemovalProposal(
+				(await univerify.read.getRemovalProposal([42n])) as readonly unknown[],
+			);
+			expect(getAddress(p.target)).to.equal(getAddress(ZERO_ADDRESS));
+			expect(getAddress(p.proposer)).to.equal(getAddress(ZERO_ADDRESS));
+			expect(p.voteCount).to.equal(0);
+			expect(p.executed).to.equal(false);
 		});
 
 		it("issuerCount and issuerAt expose genesis first, then applicants in apply order", async function () {

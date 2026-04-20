@@ -73,7 +73,10 @@ type MintArgs = { tokenId: bigint; certificateId: Hex; to: Address };
 // genesis issuer (Alice) is Active and used to drive issuance.
 
 async function deployWired() {
-	const [owner, alice, bob, student, other] = await hre.viem.getWalletClients();
+	// The first wallet client acts as the deployer — Univerify no longer has
+	// a privileged owner, so this account only signs the deployment and
+	// (permissionlessly) wires the NFT. It has no lingering on-chain authority.
+	const [deployer, alice, bob, student, other] = await hre.viem.getWalletClients();
 	const publicClient = await hre.viem.getPublicClient();
 
 	const genesis = [
@@ -85,10 +88,10 @@ async function deployWired() {
 		univerify.address,
 	]);
 	await univerify.write.setCertificateNft([certificateNft.address], {
-		account: owner.account,
+		account: deployer.account,
 	});
 
-	return { owner, alice, bob, student, other, publicClient, univerify, certificateNft };
+	return { deployer, alice, bob, student, other, publicClient, univerify, certificateNft };
 }
 
 // ── Suite ────────────────────────────────────────────────────────────
