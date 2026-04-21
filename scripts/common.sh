@@ -48,9 +48,10 @@ export FRONTEND_URL
 STACK_EXPECTED_POLKADOT_SEMVER="${STACK_EXPECTED_POLKADOT_SEMVER:-1.21.3}"
 STACK_EXPECTED_OMNI_NODE_SEMVER="${STACK_EXPECTED_OMNI_NODE_SEMVER:-1.21.3}"
 STACK_EXPECTED_ETH_RPC_SEMVER="${STACK_EXPECTED_ETH_RPC_SEMVER:-0.12.0}"
-STACK_EXPECTED_CHAIN_SPEC_BUILDER_SEMVER="${STACK_EXPECTED_CHAIN_SPEC_BUILDER_SEMVER:-17.0.0}"
+STACK_EXPECTED_CHAIN_SPEC_BUILDER_SEMVER="${STACK_EXPECTED_CHAIN_SPEC_BUILDER_SEMVER:-16.0.0}"
 # zombienet prints bare semver (e.g. 1.3.138); allow any 1.3.x patch.
 STACK_EXPECTED_ZOMBIE_MAJOR_MINOR="${STACK_EXPECTED_ZOMBIE_MAJOR_MINOR:-1.3}"
+STACK_ZOMBIENET_VERSION="${STACK_ZOMBIENET_VERSION:-v1.3.133}"
 # Set to 1 to only check that commands exist (not recommended).
 STACK_SKIP_BINARY_VERSION_CHECK="${STACK_SKIP_BINARY_VERSION_CHECK:-0}"
 
@@ -78,10 +79,10 @@ install_hint() {
             echo "Install Rust via rustup: https://rustup.rs/"
             ;;
         chain-spec-builder)
-            echo "Install with: cargo install staging-chain-spec-builder"
+            echo "Run ./scripts/download-sdk-binaries.sh to fetch stable2512-3 assets into ./bin/, or see docs/INSTALL.md."
             ;;
         zombienet)
-            echo "Install with: npm install -g @zombienet/cli"
+            echo "Run ./scripts/download-sdk-binaries.sh to fetch into ./bin/, or install with: npm install -g @zombienet/cli"
             ;;
         polkadot|polkadot-omni-node|eth-rpc)
             echo "Run ./scripts/download-sdk-binaries.sh to fetch stable2512-3 assets into ./bin/, or see docs/INSTALL.md."
@@ -131,6 +132,7 @@ stack_sdk_expected_semver() {
         polkadot-prepare-worker | polkadot-execute-worker) printf '%s\n' "$STACK_EXPECTED_POLKADOT_SEMVER" ;;
         polkadot-omni-node) printf '%s\n' "$STACK_EXPECTED_OMNI_NODE_SEMVER" ;;
         eth-rpc) printf '%s\n' "$STACK_EXPECTED_ETH_RPC_SEMVER" ;;
+        chain-spec-builder) printf '%s\n' "$STACK_EXPECTED_CHAIN_SPEC_BUILDER_SEMVER" ;;
         *)
             log_error "Internal error: unknown SDK binary: $1"
             exit 1
@@ -195,7 +197,7 @@ _ensure_one_sdk_binary() {
 }
 
 # Ensures listed SDK binaries exist under STACK_LOCAL_BIN_DIR and prepends that directory on PATH.
-# Names: polkadot | polkadot-prepare-worker | polkadot-execute-worker | polkadot-omni-node | eth-rpc
+# Names: polkadot | polkadot-prepare-worker | polkadot-execute-worker | polkadot-omni-node | eth-rpc | chain-spec-builder
 # Relay polkadot requires the two worker binaries beside it on PATH (same release).
 ensure_local_sdk_binaries() {
     [[ "${STACK_DOWNLOAD_SDK_BINARIES:-1}" == "1" ]] || return 0
@@ -208,6 +210,70 @@ ensure_local_sdk_binaries() {
     for n in "$@"; do
         _ensure_one_sdk_binary "$n"
     done
+    export PATH="$STACK_LOCAL_BIN_DIR:$PATH"
+}
+
+# Downloads the zombienet binary from the paritytech/zombienet GitHub releases.
+# Separate from SDK binaries because it lives in a different repo with different asset names.
+ensure_local_zombienet_binary() {
+    [[ "${STACK_DOWNLOAD_SDK_BINARIES:-1}" == "1" ]] || return 0
+    local dest="$STACK_LOCAL_BIN_DIR/zombienet"
+    local need_dl=1
+
+    if [[ -x "$dest" ]]; then
+        if [[ "$STACK_SKIP_BINARY_VERSION_CHECK" == "1" ]]; then
+            need_dl=0
+        else
+            local out ver
+            out="$("$dest" version 2>&1)" || true
+            ver="$(echo "$out" | head -1 | tr -d '\r\n')"
+            if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                local major_minor="${ver%.*}"
+                if [[ "$major_minor" == "$STACK_EXPECTED_ZOMBIE_MAJOR_MINOR" ]]; then
+                    need_dl=0
+                else
+                    log_info "Refreshing zombienet in $STACK_LOCAL_BIN_DIR (found $ver, want ${STACK_EXPECTED_ZOMBIE_MAJOR_MINOR}.x)."
+                fi
+            else
+                log_info "Refreshing zombienet in $STACK_LOCAL_BIN_DIR (could not parse version)."
+            fi
+        fi
+    fi
+
+    if [[ "$need_dl" -eq 0 ]]; then
+        export PATH="$STACK_LOCAL_BIN_DIR:$PATH"
+        return 0
+    fi
+
+    require_command curl
+    mkdir -p "$STACK_LOCAL_BIN_DIR"
+
+    local remote
+    case "$(uname -s):$(uname -m)" in
+        Darwin:arm64)  remote="zombienet-macos-arm64" ;;
+        Darwin:x86_64) remote="zombienet-macos-x64" ;;
+        Linux:x86_64)  remote="zombienet-linux-x64" ;;
+        Linux:aarch64) remote="zombienet-linux-arm64" ;;
+        *)
+            log_error "No prebuilt zombienet for $(uname -s) $(uname -m)."
+            log_info "Install via npm instead: npm install -g @zombienet/cli"
+            exit 1
+            ;;
+    esac
+
+    local url="https://github.com/paritytech/zombienet/releases/download/${STACK_ZOMBIENET_VERSION}/${remote}"
+    local tmp
+    tmp="$(mktemp "${TMPDIR:-/tmp}/stack-zombienet.XXXXXX")"
+    log_info "Downloading zombienet (${STACK_ZOMBIENET_VERSION})..."
+    if ! curl -fsSL "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        log_error "Failed to download zombienet from $url"
+        log_info "Install via npm instead: npm install -g @zombienet/cli"
+        exit 1
+    fi
+    chmod +x "$tmp"
+    mv "$tmp" "$dest"
+
     export PATH="$STACK_LOCAL_BIN_DIR:$PATH"
 }
 
@@ -274,20 +340,22 @@ validate_zombienet_node_binaries() {
 }
 
 validate_zombienet_toolchain() {
-    ensure_local_sdk_binaries polkadot polkadot-prepare-worker polkadot-execute-worker polkadot-omni-node
+    ensure_local_sdk_binaries polkadot polkadot-prepare-worker polkadot-execute-worker polkadot-omni-node chain-spec-builder
+    ensure_local_zombienet_binary
     validate_chain_spec_builder_version
     validate_zombienet_node_binaries
 }
 
 validate_full_external_toolchain() {
-    ensure_local_sdk_binaries polkadot polkadot-prepare-worker polkadot-execute-worker polkadot-omni-node eth-rpc
+    ensure_local_sdk_binaries polkadot polkadot-prepare-worker polkadot-execute-worker polkadot-omni-node eth-rpc chain-spec-builder
+    ensure_local_zombienet_binary
     validate_chain_spec_builder_version
     validate_zombienet_node_binaries
     require_cmd_semver_exact eth-rpc "$STACK_EXPECTED_ETH_RPC_SEMVER" "eth-rpc (pallet-revive-eth-rpc)"
 }
 
 validate_solo_dev_toolchain() {
-    ensure_local_sdk_binaries polkadot-omni-node
+    ensure_local_sdk_binaries polkadot-omni-node chain-spec-builder
     validate_chain_spec_builder_version
     require_cmd_semver_exact polkadot-omni-node "$STACK_EXPECTED_OMNI_NODE_SEMVER" "polkadot-omni-node"
 }

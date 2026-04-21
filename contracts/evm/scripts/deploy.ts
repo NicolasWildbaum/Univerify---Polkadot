@@ -1,6 +1,7 @@
 import hre from "hardhat";
 import * as fs from "fs";
 import * as path from "path";
+import { polkadotHubTestnet } from "../hardhat.config";
 
 const DEPLOYMENTS_JSON = path.resolve(__dirname, "../../../deployments.json");
 const DEPLOYMENTS_TS = path.resolve(__dirname, "../../../web/src/config/deployments.ts");
@@ -36,8 +37,11 @@ export const deployments: { evm: string | null; pvm: string | null; univerify: s
 async function main() {
 	console.log("Deploying ProofOfExistence (EVM/solc)...");
 
-	const [walletClient] = await hre.viem.getWalletClients();
-	const publicClient = await hre.viem.getPublicClient();
+	const isTestnet = hre.network.name === "polkadotTestnet";
+	const chainOption = isTestnet ? { chain: polkadotHubTestnet } : {};
+
+	const [walletClient] = await hre.viem.getWalletClients(chainOption);
+	const publicClient = await hre.viem.getPublicClient(chainOption);
 	const artifact = await hre.artifacts.readArtifact("ProofOfExistence");
 
 	const hash = await walletClient.deployContract({
