@@ -9,7 +9,7 @@ export const polkadotHubTestnet = defineChain({
 	name: "Polkadot Hub TestNet",
 	nativeCurrency: { name: "Unit", symbol: "UNIT", decimals: 18 },
 	rpcUrls: {
-		default: { http: ["https://services.polkadothub-rpc.com/testnet"] },
+		default: { http: ["https://eth-asset-hub-paseo.dotters.network"] },
 	},
 });
 
@@ -30,7 +30,7 @@ const config: HardhatUserConfig = {
 			],
 		},
 		polkadotTestnet: {
-			url: "https://services.polkadothub-rpc.com/testnet",
+			url: "https://eth-asset-hub-paseo.dotters.network",
 			chainId: 420420417,
 			accounts: [process.env.PRIVATE_KEY ?? vars.get("PRIVATE_KEY", "")].filter(Boolean),
 		},

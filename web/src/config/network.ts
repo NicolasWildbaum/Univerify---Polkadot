@@ -3,8 +3,27 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
 export const LOCAL_WS_URL = import.meta.env.VITE_LOCAL_WS_URL || "ws://localhost:9944";
 export const LOCAL_ETH_RPC_URL = import.meta.env.VITE_LOCAL_ETH_RPC_URL || "http://localhost:8545";
 
+/** Substrate RPC (PAPI / wallet extrinsics). */
 export const TESTNET_WS_URL = "wss://asset-hub-paseo.dotters.network";
-export const TESTNET_ETH_RPC_URL = "https://services.polkadothub-rpc.com/testnet";
+/**
+ * Ethereum JSON-RPC for viem reads (pallet-revive). Must not be the Substrate
+ * HTTP URL - use Eth Asset Hub. See https://paseo.site/developers
+ */
+export const TESTNET_ETH_RPC_URL = "https://eth-asset-hub-paseo.dotters.network";
+
+/**
+ * HTTP(S) host for Paseo Asset Hub Substrate JSON-RPC only. Using it as
+ * `VITE_ETH_RPC_URL` or viem transport causes nginx 405 on `eth_call`.
+ */
+const PASEO_SUBSTRATE_HTTP_HOST = "asset-hub-paseo.dotters.network";
+
+function isDeprecatedSubstrateHttpEthUrl(url: string): boolean {
+	try {
+		return new URL(url.trim()).hostname === PASEO_SUBSTRATE_HTTP_HOST;
+	} catch {
+		return false;
+	}
+}
 
 export type NetworkPreset = "local" | "testnet";
 
@@ -21,10 +40,15 @@ export function getDefaultWsUrl() {
 }
 
 export function getDefaultEthRpcUrl() {
-	return (
+	let url =
 		import.meta.env.VITE_ETH_RPC_URL ||
-		(isLocalHost() ? LOCAL_ETH_RPC_URL : TESTNET_ETH_RPC_URL)
-	);
+		(isLocalHost() ? LOCAL_ETH_RPC_URL : TESTNET_ETH_RPC_URL);
+	url = url.trim();
+	// Build-time misconfig or old docs pointed viem at the Substrate endpoint.
+	if (!isLocalHost() && isDeprecatedSubstrateHttpEthUrl(url)) {
+		url = TESTNET_ETH_RPC_URL;
+	}
+	return url;
 }
 
 export function getNetworkPresetEndpoints(preset: NetworkPreset) {
@@ -56,5 +80,18 @@ export function getStoredWsUrl() {
 }
 
 export function getStoredEthRpcUrl() {
-	return getStoredUrl("eth-rpc-url", "default-eth-rpc-url", getDefaultEthRpcUrl());
+	let url = getStoredUrl("eth-rpc-url", "default-eth-rpc-url", getDefaultEthRpcUrl());
+	url = url.trim();
+	// localStorage kept the pre-fix Substrate URL after we changed the default.
+	if (!isLocalHost() && isDeprecatedSubstrateHttpEthUrl(url)) {
+		const fixed = getDefaultEthRpcUrl();
+		try {
+			localStorage.setItem("eth-rpc-url", fixed);
+			localStorage.setItem("default-eth-rpc-url", fixed);
+		} catch {
+			// non-fatal (private mode)
+		}
+		return fixed;
+	}
+	return url;
 }

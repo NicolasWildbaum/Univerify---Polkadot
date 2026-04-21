@@ -8,11 +8,11 @@ PVM_DIR  := $(ROOT_DIR)/contracts/pvm
 # Hardhat stores vars under an OS-dependent path; allow override via HARDHAT_VARS_FILE.
 HARDHAT_VARS_FILE ?= $(shell node -e "const fs=require('fs');const os=require('os');const path=require('path');const home=os.homedir();const cand=[process.env.HARDHAT_VARS_FILE,path.join(home,'Library/Preferences/hardhat-nodejs/vars.json'),path.join(home,'.config/hardhat-nodejs/vars.json')].filter(Boolean);for(const p of cand){try{fs.accessSync(p,fs.constants.R_OK);process.stdout.write(p);process.exit(0);}catch{}}")
 ifndef PRIVATE_KEY
-  PRIVATE_KEY := $(shell node -e "try{const v=require('$(HARDHAT_VARS_FILE)');process.stdout.write(v.vars.PRIVATE_KEY??'')}catch(e){}" 2>/dev/null)
+  PRIVATE_KEY := $(shell node -e "try{const v=require('$(HARDHAT_VARS_FILE)');const key=v?.vars?.PRIVATE_KEY;process.stdout.write(typeof key==='string'?key:(key?.value??''))}catch(e){}" 2>/dev/null)
 endif
 
 ifndef MNEMONIC
-  MNEMONIC := $(shell node -e "try{const v=require('$(HARDHAT_VARS_FILE)');process.stdout.write(v.vars.MNEMONIC??'')}catch(e){}" 2>/dev/null)
+  MNEMONIC := $(shell node -e "try{const v=require('$(HARDHAT_VARS_FILE)');const mnemonic=v?.vars?.MNEMONIC;process.stdout.write(typeof mnemonic==='string'?mnemonic:(mnemonic?.value??''))}catch(e){}" 2>/dev/null)
 endif
 
 export PRIVATE_KEY
@@ -26,10 +26,15 @@ deploy-paseo: check-key deploy-paseo-evm deploy-paseo-pvm
 	@echo "=== Paseo deployment complete ==="
 	@cat $(ROOT_DIR)/deployments.json
 
+.PHONY: deploy-all
+deploy-all: deploy-paseo deploy-frontend
+	@echo ""
+	@echo "=== Full stack deployment complete ==="
+
 .PHONY: deploy-paseo-evm
 deploy-paseo-evm:
-	@echo "[1/2] Deploying ProofOfExistence (EVM)..."
-	@cd $(EVM_DIR) && npm install --silent && npx hardhat compile --quiet && npx hardhat run scripts/deploy.ts --network polkadotTestnet
+	@echo "[1/2] Deploying Univerify + CertificateNft (EVM)..."
+	@cd $(EVM_DIR) && npm install --silent && npx hardhat compile --quiet && npx hardhat run scripts/deploy-univerify.ts --network polkadotTestnet
 
 .PHONY: deploy-paseo-pvm
 deploy-paseo-pvm:
