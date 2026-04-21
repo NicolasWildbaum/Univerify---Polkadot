@@ -72,28 +72,36 @@ export default function WalletConnectButton() {
 					refreshExtensions();
 					setOpen((o) => !o);
 				}}
-				className="btn-primary text-xs whitespace-nowrap"
+				className="btn-primary text-xs whitespace-nowrap min-w-[180px]"
 				title="Connect a Polkadot wallet"
 			>
 				{renderButtonLabel(status)}
 			</button>
 
-				{open && (
-					<div className="absolute right-0 mt-2 w-80 rounded-xl border border-white/[0.08] bg-surface-950/95 backdrop-blur-xl shadow-2xl p-3 z-50 animate-fade-in">
-						{status.kind === "connected" ? (
-							<ConnectedPanel
-								status={status}
-								accounts={extensionAccounts}
-								onPick={(addr) => {
-									selectAccount(addr);
-									setOpen(false);
-								}}
-								onDisconnect={() => {
-									disconnect();
-									setOpen(false);
-								}}
-							/>
-						) : (
+			{open && (
+				<div className="absolute right-0 mt-3 w-[22rem] card z-50 animate-fade-in">
+					<div className="mb-3 flex items-center justify-between gap-3">
+						<div>
+							<div className="hero-stat-label">Wallet Access</div>
+							<div className="mt-1 text-sm text-text-secondary">
+								Connect a Polkadot wallet to sign contract calls through your chain.
+							</div>
+						</div>
+					</div>
+					{status.kind === "connected" ? (
+						<ConnectedPanel
+							status={status}
+							accounts={extensionAccounts}
+							onPick={(addr) => {
+								selectAccount(addr);
+								setOpen(false);
+							}}
+							onDisconnect={() => {
+								disconnect();
+								setOpen(false);
+							}}
+						/>
+					) : (
 						<DiscoverPanel
 							status={status}
 							extensions={availableExtensions}
@@ -138,7 +146,7 @@ function ConnectedPanel({
 				</span>
 				<button
 					onClick={onDisconnect}
-					className="text-xs text-accent-red hover:underline"
+					className="btn-secondary text-[11px] px-3 py-1.5"
 				>
 					Disconnect
 				</button>
@@ -152,9 +160,9 @@ function ConnectedPanel({
 							<button
 								key={a.address}
 								onClick={() => onPick(a.address)}
-								className={`w-full text-left rounded-lg px-2 py-1.5 border transition-colors ${
+								className={`w-full text-left rounded-2xl px-3 py-3 border transition-colors ${
 									isActive
-										? "bg-polka-500/10 border-polka-500/30"
+										? "bg-[#635bff]/15 border-[#635bff]/35"
 										: "bg-white/[0.02] border-white/[0.06] hover:border-white/[0.12]"
 								}`}
 							>
@@ -174,7 +182,7 @@ function ConnectedPanel({
 			)}
 
 			{accounts.length <= 1 && (
-				<div className="rounded-lg bg-white/[0.02] border border-white/[0.06] p-2 space-y-0.5">
+				<div className="card-muted space-y-1">
 					<div className="text-sm text-text-primary">
 						{status.account.name || "Unnamed"}
 					</div>
@@ -220,13 +228,13 @@ function DevFaucet({ address }: { address: string }) {
 	}
 
 	return (
-		<div className="pt-2 border-t border-white/[0.06] space-y-1.5">
-			<button
-				onClick={onClick}
-				disabled={state.kind === "sending"}
-				className="w-full btn-secondary text-xs justify-center disabled:opacity-50"
-				title="Send a small transfer from //Alice so this account can pay for fees on the local chain"
-			>
+			<div className="pt-2 border-t border-white/[0.06] space-y-1.5">
+				<button
+					onClick={onClick}
+					disabled={state.kind === "sending"}
+					className="w-full btn-secondary text-xs justify-center disabled:opacity-50"
+					title="Send a small transfer from //Alice so this account can pay for fees on the local chain"
+				>
 				{state.kind === "sending" ? "Sending…" : "Request dev funds (local)"}
 			</button>
 			{state.kind === "success" && (
@@ -277,7 +285,7 @@ function DiscoverPanel({
 							key={name}
 							onClick={() => onConnect(name)}
 							disabled={status.kind === "connecting"}
-							className="btn-secondary text-xs justify-start"
+							className="btn-secondary text-xs justify-start px-4"
 						>
 							{labelFor(name)}
 						</button>
