@@ -23,6 +23,7 @@ import { type Address, type Hex, isAddress } from "viem";
 import { getSs58AddressInfo } from "@polkadot-api/substrate-bindings";
 import { univerifyAbi, IssuerStatus, issuerStatusLabel } from "../config/univerify";
 import { deployments } from "../config/deployments";
+import { getInitialUniverifyAddress } from "../config/univerifyContractStorage";
 import { getPublicClient } from "../config/evm";
 import { useChainStore } from "../store/chainStore";
 import {
@@ -96,8 +97,8 @@ export default function GovernancePage() {
 	const scopedStorageKey = `${STORAGE_KEY_PREFIX}:${ethRpcUrl}`;
 
 	const defaultAddress = deployments.univerify ?? "";
-	const [contractAddress, setContractAddress] = useState(
-		() => localStorage.getItem(scopedStorageKey) || defaultAddress,
+	const [contractAddress, setContractAddress] = useState(() =>
+		getInitialUniverifyAddress(scopedStorageKey, defaultAddress),
 	);
 
 	const [load, setLoad] = useState<LoadState>({ kind: "idle" });
@@ -165,7 +166,7 @@ export default function GovernancePage() {
 				const publicClient = getPublicClient(ethRpcUrl);
 				const addr = contractAddress as Address;
 				const code = await publicClient.getCode({ address: addr });
-				if (!code || code === "0x") {
+				if (isEmptyContractCode(code)) {
 					setTx({
 						kind: "error",
 						message: `No Univerify contract found at ${addr} on ${ethRpcUrl}.`,
@@ -896,34 +897,56 @@ function TxBanner({ tx }: { tx: TxState }) {
 
 type ReadClient = ReturnType<typeof getPublicClient>;
 
+function isEmptyContractCode(code: string | undefined): boolean {
+	if (code == null) return true;
+	const c = code.trim().toLowerCase();
+	return c === "" || c === "0x";
+}
+
 async function loadRegistry(client: ReadClient, address: Address): Promise<RegistryView> {
-	const [threshold, activeCount, maxName, count, proposalCount] = await Promise.all([
-		client.readContract({
-			address,
-			abi: univerifyAbi,
-			functionName: "approvalThreshold",
-		}),
-		client.readContract({
-			address,
-			abi: univerifyAbi,
-			functionName: "activeIssuerCount",
-		}),
-		client.readContract({
-			address,
-			abi: univerifyAbi,
-			functionName: "MAX_NAME_LENGTH",
-		}),
-		client.readContract({
-			address,
-			abi: univerifyAbi,
-			functionName: "issuerCount",
-		}),
-		client.readContract({
-			address,
-			abi: univerifyAbi,
-			functionName: "removalProposalCount",
-		}),
-	]);
+	const code = await client.getCode({ address });
+	if (isEmptyContractCode(code)) {
+		throw new Error(
+			`No contract bytecode at ${address} on this Ethereum RPC. The address in deployments (or pasted here) does not match a Univerify deploy on this chain. Run "cd contracts/evm && npm run deploy:univerify:testnet", then update web/src/config/deployments.ts (or paste the new address above).`,
+		);
+	}
+
+	let threshold: unknown;
+	let activeCount: unknown;
+	let maxName: unknown;
+	let count: unknown;
+	let proposalCount: unknown;
+	try {
+		[threshold, activeCount, maxName, count, proposalCount] = await Promise.all([
+			client.readContract({
+				address,
+				abi: univerifyAbi,
+				functionName: "approvalThreshold",
+			}),
+			client.readContract({
+				address,
+				abi: univerifyAbi,
+				functionName: "activeIssuerCount",
+			}),
+			client.readContract({
+				address,
+				abi: univerifyAbi,
+				functionName: "MAX_NAME_LENGTH",
+			}),
+			client.readContract({
+				address,
+				abi: univerifyAbi,
+				functionName: "issuerCount",
+			}),
+			client.readContract({
+				address,
+				abi: univerifyAbi,
+				functionName: "removalProposalCount",
+			}),
+		]);
+	} catch (err) {
+		throw explainRegistryReadError(address, err);
+	}
 
 	const total = Number(count as bigint);
 	const indices = Array.from({ length: total }, (_, i) => BigInt(i));
@@ -1048,6 +1071,22 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 		approvals,
 		openProposals,
 	};
+}
+
+function explainRegistryReadError(address: Address, err: unknown): Error {
+	const message = err instanceof Error ? err.message : String(err);
+	if (
+		message.includes('function "approvalThreshold" returned no data') ||
+		message.includes('function "activeIssuerCount" returned no data') ||
+		message.includes('function "MAX_NAME_LENGTH" returned no data') ||
+		message.includes('function "issuerCount" returned no data') ||
+		message.includes('function "removalProposalCount" returned no data')
+	) {
+		return new Error(
+			`Reading Univerify at ${address} returned empty data ("0x"). Most often there is no contract at this address on the selected Ethereum RPC (check deployments.ts / redeploy), or the RPC is not the same chain as your Substrate node. Less often the address holds a different contract than this ABI.`,
+		);
+	}
+	return err instanceof Error ? err : new Error(message);
 }
 
 function friendlyError(label: string, err: unknown): string {

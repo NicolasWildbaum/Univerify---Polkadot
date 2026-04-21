@@ -1,12 +1,13 @@
 import hre from "hardhat";
 import * as fs from "fs";
 import * as path from "path";
-import { isAddress, isHex, size, type Address, type Hex } from "viem";
+import { defineChain, isAddress, isHex, size, type Address, type Hex } from "viem";
 
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const DEPLOYMENTS_JSON = path.join(REPO_ROOT, "deployments.json");
 const DEPLOYMENTS_TS = path.join(REPO_ROOT, "web/src/config/deployments.ts");
 const CONFIG_DIR = path.resolve(__dirname, "../config");
+const POLKADOT_HUB_TESTNET_RPC = "https://services.polkadothub-rpc.com/testnet";
 
 // Must match Univerify.sol `MAX_NAME_LENGTH` exactly.
 const MAX_NAME_LENGTH = 64;
@@ -155,8 +156,31 @@ async function main() {
 		console.log(`  - ${issuer.name} (${issuer.account})`);
 	}
 
-	const [walletClient] = await hre.viem.getWalletClients();
-	const publicClient = await hre.viem.getPublicClient();
+	const viemChain =
+		networkName === "polkadotTestnet"
+			? defineChain({
+					id: 420420417,
+					name: "Polkadot Hub Testnet",
+					nativeCurrency: { name: "Test DOT", symbol: "TDOT", decimals: 18 },
+					rpcUrls: {
+						default: { http: [POLKADOT_HUB_TESTNET_RPC] },
+					},
+			  })
+			: undefined;
+	const walletClients = await hre.viem.getWalletClients(
+		viemChain ? { chain: viemChain } : {},
+	);
+	const walletClient = walletClients[0];
+	if (!walletClient) {
+		throw new Error(
+			"No deployer account for polkadotTestnet. Set a funded key either way:\n" +
+				"  npx hardhat vars set PRIVATE_KEY\n" +
+				"  or: PRIVATE_KEY=0x... npm run deploy:univerify:testnet",
+		);
+	}
+	const publicClient = await hre.viem.getPublicClient(
+		viemChain ? { chain: viemChain } : {},
+	);
 	const univerifyArtifact = await hre.artifacts.readArtifact("Univerify");
 	const nftArtifact = await hre.artifacts.readArtifact("CertificateNft");
 

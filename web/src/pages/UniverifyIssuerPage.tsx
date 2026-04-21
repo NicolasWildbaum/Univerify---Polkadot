@@ -10,6 +10,7 @@ import { type Address, type Hex, type Abi, isAddress } from "viem";
 import { univerifyAbi } from "../config/univerify";
 import { getPublicClient } from "../config/evm";
 import { deployments } from "../config/deployments";
+import { getInitialUniverifyAddress } from "../config/univerifyContractStorage";
 import { useChainStore } from "../store/chainStore";
 import {
 	useWalletStore,
@@ -95,8 +96,8 @@ export default function UniverifyIssuerPage() {
 	const scopedStorageKey = `${STORAGE_KEY_PREFIX}:${ethRpcUrl}`;
 
 	const defaultAddress = deployments.univerify ?? "";
-	const [contractAddress, setContractAddress] = useState(
-		() => localStorage.getItem(scopedStorageKey) || defaultAddress,
+	const [contractAddress, setContractAddress] = useState(() =>
+		getInitialUniverifyAddress(scopedStorageKey, defaultAddress),
 	);
 
 	// Claims
