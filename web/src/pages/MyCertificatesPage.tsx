@@ -24,7 +24,17 @@ import { certificateNftAbi } from "../config/certificateNft";
 import { getPublicClient } from "../config/evm";
 import { deployments } from "../config/deployments";
 import { useChainStore } from "../store/chainStore";
-import { useWalletStore, selectConnectedEvmAddress } from "../account/wallet";
+import {
+	useWalletStore,
+	selectConnectedEvmAddress,
+	selectConnectedSigner,
+} from "../account/wallet";
+import {
+	buildChallenge,
+	createPresentation,
+	encodePresentation,
+	PROOF_VALIDITY_SECONDS,
+} from "../utils/ownershipProof";
 
 interface CertificateRow {
 	tokenId: bigint;
@@ -206,7 +216,11 @@ export default function MyCertificatesPage() {
 					) : (
 						<div className="space-y-3">
 							{rows.map((row) => (
-								<CertificateCard key={row.tokenId.toString()} row={row} />
+								<CertificateCard
+									key={row.tokenId.toString()}
+									row={row}
+									ownerH160={studentAddress!}
+								/>
 							))}
 						</div>
 					)}
@@ -216,9 +230,24 @@ export default function MyCertificatesPage() {
 	);
 }
 
-function CertificateCard({ row }: { row: CertificateRow }) {
+function CertificateCard({
+	row,
+	ownerH160,
+}: {
+	row: CertificateRow;
+	ownerH160: Address;
+}) {
+	const signer = useWalletStore(selectConnectedSigner);
+
 	const [expanded, setExpanded] = useState(false);
 	const [copied, setCopied] = useState(false);
+
+	// Ownership proof state
+	type ProofStatus = "idle" | "signing" | "done" | "error";
+	const [proofStatus, setProofStatus] = useState<ProofStatus>("idle");
+	const [proofUrl, setProofUrl] = useState<string | null>(null);
+	const [proofError, setProofError] = useState<string | null>(null);
+	const [proofCopied, setProofCopied] = useState(false);
 
 	const verifyUrl = `${window.location.origin}/#/verify/cert/${row.certificateId}`;
 	const issuedAtIso =
@@ -230,6 +259,37 @@ function CertificateCard({ row }: { row: CertificateRow }) {
 			.then(() => {
 				setCopied(true);
 				setTimeout(() => setCopied(false), 1500);
+			})
+			.catch(() => {});
+	}
+
+	async function generateProofLink() {
+		if (!signer) return;
+		setProofStatus("signing");
+		setProofError(null);
+		setProofUrl(null);
+		try {
+			const challenge = buildChallenge(row.certificateId, ownerH160);
+			const presentation = await createPresentation(challenge, signer);
+			const encoded = encodePresentation(presentation);
+			const url = `${window.location.origin}/#/verify/cert/${row.certificateId}?presentation=${encoded}`;
+			setProofUrl(url);
+			setProofStatus("done");
+			// Auto-copy to clipboard
+			navigator.clipboard?.writeText(url).catch(() => {});
+		} catch (e) {
+			setProofStatus("error");
+			setProofError(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	function copyProofUrl() {
+		if (!proofUrl) return;
+		navigator.clipboard
+			?.writeText(proofUrl)
+			.then(() => {
+				setProofCopied(true);
+				setTimeout(() => setProofCopied(false), 1500);
 			})
 			.catch(() => {});
 	}
@@ -265,6 +325,18 @@ function CertificateCard({ row }: { row: CertificateRow }) {
 				<button onClick={copyLink} className="btn-primary text-xs">
 					{copied ? "Copied!" : "Copy verification link"}
 				</button>
+				<button
+					onClick={() => void generateProofLink()}
+					disabled={!signer || proofStatus === "signing"}
+					className="btn-secondary text-xs"
+					title={
+						!signer
+							? "Connect wallet to generate a signed proof link"
+							: `Sign a challenge valid for ${PROOF_VALIDITY_SECONDS / 60} min to prove you control this wallet`
+					}
+				>
+					{proofStatus === "signing" ? "Waiting for signature…" : "Generate ownership proof link"}
+				</button>
 				<a
 					href={`#/verify/cert/${row.certificateId}`}
 					target="_blank"
@@ -280,6 +352,25 @@ function CertificateCard({ row }: { row: CertificateRow }) {
 					{expanded ? "Hide details" : "View details"}
 				</button>
 			</div>
+
+			{proofStatus === "done" && proofUrl && (
+				<div className="rounded-lg border border-accent-green/20 bg-accent-green/5 p-3 space-y-2 animate-fade-in">
+					<p className="text-xs font-medium text-accent-green">
+						✓ Signed — link copied to clipboard. Valid for{" "}
+						{PROOF_VALIDITY_SECONDS / 60} minutes.
+					</p>
+					<p className="text-xs text-text-muted break-all font-mono">{proofUrl}</p>
+					<button onClick={copyProofUrl} className="btn-secondary text-xs">
+						{proofCopied ? "Copied!" : "Copy again"}
+					</button>
+				</div>
+			)}
+
+			{proofStatus === "error" && proofError && (
+				<div className="rounded-lg border border-accent-red/30 bg-accent-red/5 p-3 animate-fade-in">
+					<p className="text-xs text-accent-red">{proofError}</p>
+				</div>
+			)}
 
 			{expanded && (
 				<div className="rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 space-y-2 animate-fade-in">
