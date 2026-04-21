@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useChainStore } from "../store/chainStore";
 import { useConnection } from "../hooks/useConnection";
 import { getClient } from "../hooks/useChain";
@@ -10,7 +11,7 @@ import {
 } from "../config/network";
 
 export default function HomePage() {
-	const { wsUrl, ethRpcUrl, setEthRpcUrl, connected, blockNumber, pallets } = useChainStore();
+	const { wsUrl, ethRpcUrl, setEthRpcUrl, connected, blockNumber } = useChainStore();
 	const { connect } = useConnection();
 	const [urlInput, setUrlInput] = useState(wsUrl);
 	const [ethRpcInput, setEthRpcInput] = useState(ethRpcUrl);
@@ -62,25 +63,76 @@ export default function HomePage() {
 	}
 
 	return (
-		<div className="space-y-8 animate-fade-in">
-			{/* Hero */}
-			<div className="space-y-3">
-				<h1 className="page-title">
-					Polkadot Stack{" "}
-					<span className="bg-gradient-to-r from-polka-400 to-polka-600 bg-clip-text text-transparent">
-						Template
-					</span>
-				</h1>
-				<p className="text-text-secondary text-base leading-relaxed max-w-2xl">
-					A developer starter template demonstrating Proof of Existence implemented three
-					ways: as a Substrate pallet, a Solidity EVM contract, and a PVM contract. Drop a
-					file to claim its hash on-chain.
-				</p>
+		<div className="section-stack">
+			<div className="page-hero">
+				<div className="space-y-5">
+					<span className="page-kicker">Academic Trust Layer</span>
+					<div className="space-y-4">
+						<h1 className="page-title">
+							Univerify turns your blockchain into a native rail for issuing,
+							governing and verifying academic credentials.
+						</h1>
+						<p className="page-subtitle">
+							Connect your chain, route wallet-based governance, issue verifiable
+							certificates and expose a public verification experience from one
+							cohesive control surface.
+						</p>
+					</div>
+
+					<div className="hero-grid">
+						<HeroStat
+							label="Chain State"
+							value={connected ? "Online" : "Awaiting connection"}
+							caption={error ?? (connected ? "RPC and runtime are reachable" : "Connect your node to begin")}
+						/>
+						<HeroStat
+							label="Connected Network"
+							value={chainName ?? "Unknown"}
+							caption={connected ? "Runtime metadata loaded from chain" : "Detected after a successful connection"}
+						/>
+						<HeroStat
+							label="Latest Block"
+							value={`#${blockNumber}`}
+							caption="Live chain head observed by the UI"
+						/>
+					</div>
+
+					<div className="grid gap-3 md:grid-cols-4">
+						<QuickLink
+							to="/univerify"
+							title="Issue"
+							description="Create and register credentials through the Univerify contract."
+						/>
+						<QuickLink
+							to="/governance"
+							title="Governance"
+							description="Manage issuer admission and removal with on-chain federation rules."
+						/>
+						<QuickLink
+							to="/verify"
+							title="Verify"
+							description="Validate links, claims integrity and certificate status in one flow."
+						/>
+						<QuickLink
+							to="/my-certificates"
+							title="My Certificates"
+							description="Surface the soulbound credentials held by the connected wallet."
+						/>
+					</div>
+				</div>
 			</div>
 
-			{/* Connection card */}
-			<div className="card space-y-5">
-				<div className="flex flex-wrap gap-2">
+			<div className="card space-y-6">
+				<div className="flex flex-wrap items-center justify-between gap-3">
+					<div>
+						<p className="page-kicker">Network Control</p>
+						<h2 className="section-title mt-3">Chain endpoints</h2>
+						<p className="mt-2 text-sm text-text-secondary max-w-2xl">
+							Point the interface at your Substrate node and your Ethereum-compatible
+							RPC without changing the business logic behind issuance or verification.
+						</p>
+					</div>
+					<div className="flex flex-wrap gap-2">
 					<button onClick={() => applyPreset("local")} className="btn-secondary text-xs">
 						Use Local Dev
 					</button>
@@ -90,8 +142,11 @@ export default function HomePage() {
 					>
 						Use Hub TestNet
 					</button>
+					</div>
 				</div>
 
+				<div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
+					<div className="space-y-4">
 				<div>
 					<label className="label">Substrate WebSocket Endpoint</label>
 					<div className="flex gap-2">
@@ -108,7 +163,7 @@ export default function HomePage() {
 							disabled={connecting}
 							className="btn-primary"
 						>
-							{connecting ? "Connecting..." : "Connect"}
+							{connecting ? "Connecting..." : "Connect chain"}
 						</button>
 					</div>
 				</div>
@@ -126,13 +181,24 @@ export default function HomePage() {
 						className="input-field w-full"
 					/>
 					<p className="text-xs text-text-muted mt-2">
-						Used by the EVM and PVM contract pages.
+						Used by the credential issuance, governance, verification, and certificate
+						pages.
 					</p>
 				</div>
+					</div>
 
-				{/* Status grid */}
-				<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-					<StatusItem label="Chain Status">
+					<div className="space-y-3">
+						<div className="info-banner">
+							<div className="hero-stat-label">Endpoint Profile</div>
+							<div className="hero-stat-value text-xl">
+								{wsUrl.includes("localhost") ? "Local environment" : "Remote network"}
+							</div>
+							<div className="hero-stat-caption">
+								Current WS endpoint: <code className="text-text-primary">{wsUrl}</code>
+							</div>
+						</div>
+						<div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+							<StatusItem label="Chain Status">
 						{error ? (
 							<span className="text-accent-red text-sm">{error}</span>
 						) : connected ? (
@@ -152,38 +218,9 @@ export default function HomePage() {
 					<StatusItem label="Latest Block">
 						<span className="font-mono">#{blockNumber}</span>
 					</StatusItem>
+						</div>
+					</div>
 				</div>
-			</div>
-
-			{/* Feature cards */}
-			<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-				<FeatureCard
-					title="Pallet PoE"
-					description="Claim file hashes via the Substrate FRAME pallet using PAPI."
-					link="/pallet"
-					accentColor="text-accent-blue"
-					borderColor="hover:border-accent-blue/20"
-					available={pallets.templatePallet}
-					unavailableReason="TemplatePallet not found in connected runtime"
-				/>
-				<FeatureCard
-					title="EVM PoE (solc)"
-					description="Same proof of existence via Solidity compiled with solc, deployed to the EVM backend."
-					link="/evm"
-					accentColor="text-accent-purple"
-					borderColor="hover:border-accent-purple/20"
-					available={pallets.revive}
-					unavailableReason="pallet-revive not found in connected runtime"
-				/>
-				<FeatureCard
-					title="PVM PoE (resolc)"
-					description="Same Solidity contract compiled with resolc to PolkaVM bytecode, deployed via pallet-revive."
-					link="/pvm"
-					accentColor="text-accent-green"
-					borderColor="hover:border-accent-green/20"
-					available={pallets.revive}
-					unavailableReason="pallet-revive not found in connected runtime"
-				/>
 			</div>
 		</div>
 	);
@@ -191,54 +228,47 @@ export default function HomePage() {
 
 function StatusItem({ label, children }: { label: string; children: React.ReactNode }) {
 	return (
-		<div>
-			<h3 className="text-xs font-medium text-text-tertiary uppercase tracking-wider mb-1">
+		<div className="hero-stat">
+			<h3 className="hero-stat-label">
 				{label}
 			</h3>
-			<p className="text-lg font-semibold text-text-primary">{children}</p>
+			<p className="hero-stat-value text-xl">{children}</p>
 		</div>
 	);
 }
 
-function FeatureCard({
+function HeroStat({
+	label,
+	value,
+	caption,
+}: {
+	label: string;
+	value: string;
+	caption: string;
+}) {
+	return (
+		<div className="hero-stat">
+			<p className="hero-stat-label">{label}</p>
+			<p className="hero-stat-value">{value}</p>
+			<p className="hero-stat-caption">{caption}</p>
+		</div>
+	);
+}
+
+function QuickLink({
+	to,
 	title,
 	description,
-	link,
-	accentColor,
-	borderColor,
-	available,
-	unavailableReason,
 }: {
+	to: string;
 	title: string;
 	description: string;
-	link: string;
-	accentColor: string;
-	borderColor: string;
-	available: boolean | null;
-	unavailableReason: string;
 }) {
-	if (available !== true) {
-		return (
-			<div className="card opacity-40">
-				<h3 className="text-lg font-semibold mb-2 text-text-muted font-display">{title}</h3>
-				<p className="text-sm text-text-muted">{description}</p>
-				<p className="text-xs mt-3">
-					{available === null ? (
-						<span className="text-accent-yellow">Detecting...</span>
-					) : (
-						<span className="text-accent-red">{unavailableReason}</span>
-					)}
-				</p>
-			</div>
-		);
-	}
-
 	return (
-		<a href={`#${link}`} className={`card-hover block group ${borderColor}`}>
-			<h3 className={`text-lg font-semibold mb-2 font-display ${accentColor}`}>{title}</h3>
-			<p className="text-sm text-text-secondary group-hover:text-text-primary transition-colors">
-				{description}
-			</p>
-		</a>
+		<Link to={to} className="card-hover block h-full">
+			<p className="hero-stat-label">Open tab</p>
+			<h3 className="section-title mt-3">{title}</h3>
+			<p className="mt-2 text-sm text-text-secondary">{description}</p>
+		</Link>
 	);
 }
