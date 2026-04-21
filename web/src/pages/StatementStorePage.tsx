@@ -113,8 +113,14 @@ export default function StatementStorePage() {
 
 	if (available === null) {
 		return (
-			<div className="space-y-6 animate-fade-in">
-				<h1 className="page-title text-accent-orange">Statement Store</h1>
+			<div className="section-stack">
+				<div className="page-hero">
+					<div className="space-y-3">
+						<span className="page-kicker">Off-chain Relay</span>
+						<h1 className="page-title text-accent-orange">Statement Store</h1>
+						<p className="page-subtitle">Checking whether the connected node exposes Statement Store capabilities.</p>
+					</div>
+				</div>
 				<p className="text-text-muted text-sm">Checking availability...</p>
 			</div>
 		);
@@ -122,11 +128,16 @@ export default function StatementStorePage() {
 
 	if (!available) {
 		return (
-			<div className="space-y-6 animate-fade-in">
-				<h1 className="page-title text-accent-orange">Statement Store</h1>
-				<p className="text-text-secondary">
+			<div className="section-stack">
+				<div className="page-hero">
+					<div className="space-y-3">
+						<span className="page-kicker">Off-chain Relay</span>
+						<h1 className="page-title text-accent-orange">Statement Store</h1>
+						<p className="page-subtitle">
 					View statements stored in the node's local Statement Store.
-				</p>
+						</p>
+					</div>
+				</div>
 				<div className="card">
 					<p className="text-text-muted text-sm">
 						The connected node does not expose Statement Store RPCs. In polkadot-sdk
@@ -147,13 +158,16 @@ export default function StatementStorePage() {
 	}
 
 	return (
-		<div className="space-y-6 animate-fade-in">
-			<div className="space-y-2">
-				<h1 className="page-title text-accent-orange">Statement Store</h1>
-				<p className="text-text-secondary">
+		<div className="section-stack">
+			<div className="page-hero">
+				<div className="space-y-3">
+					<span className="page-kicker">Off-chain Relay</span>
+					<h1 className="page-title text-accent-orange">Statement Store</h1>
+					<p className="page-subtitle">
 					View statements stored in the node's local Statement Store. Statements are
 					off-chain data propagated across the peer-to-peer network.
-				</p>
+					</p>
+				</div>
 			</div>
 
 			<div className="card space-y-4">

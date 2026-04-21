@@ -289,13 +289,16 @@ export default function AccountsPage() {
 	};
 
 	return (
-		<div className="space-y-6 animate-fade-in">
-			<div className="space-y-2">
-				<h1 className="page-title text-polka-400">Accounts</h1>
-				<p className="text-text-secondary">
+		<div className="section-stack">
+			<div className="page-hero">
+				<div className="space-y-3">
+					<span className="page-kicker">Identity Surface</span>
+					<h1 className="page-title text-polka-400">Accounts</h1>
+					<p className="page-subtitle">
 					Manage dev accounts, connect browser extension wallets, or use Polkadot Host
 					accounts. Fund accounts using Sudo on the dev chain.
-				</p>
+					</p>
+				</div>
 			</div>
 
 			{/* Fund amount */}

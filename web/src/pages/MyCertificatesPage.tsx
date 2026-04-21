@@ -142,15 +142,18 @@ export default function MyCertificatesPage() {
 	}, [refresh]);
 
 	return (
-		<div className="space-y-6 animate-fade-in">
-			<div className="space-y-2">
-				<h1 className="page-title text-polka-500">My Certificates</h1>
-				<p className="text-text-secondary">
+		<div className="section-stack">
+			<div className="page-hero">
+				<div className="space-y-3">
+					<span className="page-kicker">Student Wallet View</span>
+					<h1 className="page-title text-polka-500">My Certificates</h1>
+					<p className="page-subtitle">
 					Soulbound certificates minted to the connected wallet. Each is a
 					non-transferable NFT whose status mirrors the Univerify registry. Share the
 					public verification link with anyone who needs to confirm the certificate
 					on-chain.
-				</p>
+					</p>
+				</div>
 			</div>
 
 			{!isWalletConnected || !studentAddress ? (

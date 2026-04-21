@@ -220,25 +220,28 @@ export default function VerificationPage() {
 	}
 
 	return (
-		<div className="space-y-6 animate-fade-in">
-			<div className="space-y-2">
-				<h1 className="page-title text-accent-blue">Verify Credential</h1>
-				<p className="text-text-secondary">
+		<div className="section-stack">
+			<div className="page-hero">
+				<div className="space-y-3">
+					<span className="page-kicker">Verification Workflow</span>
+					<h1 className="page-title text-accent-blue">Verify Credential</h1>
+					<p className="page-subtitle">
 					Two paths, both public, both on-chain. Use <strong>Link / ID</strong> to
 					confirm that a certificate exists, who issued it, who holds it, and whether
 					it has been revoked. Use <strong>Validate Information Integrity</strong> to
 					additionally prove that a specific (holder, degree, institution, month) tuple
 					matches the on-chain hash for that certificate.
-				</p>
+					</p>
+				</div>
 			</div>
 
 			<div className="card space-y-4">
 				{/* Mode tabs */}
-				<div className="flex gap-2 flex-wrap">
+				<div className="segmented-control">
 					<button
 						onClick={() => switchMode("link")}
 						className={`btn-secondary text-xs ${
-							mode === "link" ? "!bg-white/[0.08] !text-text-primary" : ""
+							mode === "link" ? "segmented-option-active" : ""
 						}`}
 					>
 						Link / ID
@@ -246,7 +249,7 @@ export default function VerificationPage() {
 					<button
 						onClick={() => switchMode("integrity")}
 						className={`btn-secondary text-xs ${
-							mode === "integrity" ? "!bg-white/[0.08] !text-text-primary" : ""
+							mode === "integrity" ? "segmented-option-active" : ""
 						}`}
 					>
 						Validate Information Integrity

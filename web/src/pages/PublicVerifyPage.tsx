@@ -140,14 +140,17 @@ export default function PublicVerifyPage() {
 	}, [idValid, rawId, ethRpcUrl, univerifyAddress, nftAddress]);
 
 	return (
-		<div className="space-y-6 animate-fade-in">
-			<div className="space-y-2">
-				<h1 className="page-title text-accent-blue">Verify Certificate</h1>
-				<p className="text-text-secondary">
+		<div className="section-stack">
+			<div className="page-hero">
+				<div className="space-y-3">
+					<span className="page-kicker">Public Verification</span>
+					<h1 className="page-title text-accent-blue">Verify Certificate</h1>
+					<p className="page-subtitle">
 					Public on-chain verification by certificate id. No login or wallet
 					required. Anyone with this link can confirm whether the certificate
 					exists, who issued it, and whether it is currently valid.
-				</p>
+					</p>
+				</div>
 			</div>
 
 			{!univerifyAddress ? (
