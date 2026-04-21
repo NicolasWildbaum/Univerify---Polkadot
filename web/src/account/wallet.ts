@@ -126,7 +126,16 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 		set({ status: { kind: "connecting" } });
 		try {
 			currentUnsubscribe?.();
-			const ext = await connectInjectedExtension(extensionName);
+			const connectionTimeout = new Promise<never>((_, reject) =>
+				setTimeout(
+					() => reject(new Error(`Wallet connection timed out. Check that ${extensionName} is unlocked and has authorized this site.`)),
+					15_000,
+				),
+			);
+			const ext = await Promise.race([
+				connectInjectedExtension(extensionName),
+				connectionTimeout,
+			]);
 			currentExtensionName = extensionName;
 
 			const accounts = ext.getAccounts();
