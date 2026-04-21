@@ -22,10 +22,16 @@ import { getSs58AddressInfo } from "@polkadot-api/substrate-bindings";
 import { submitReviveCall } from "../account/reviveCall";
 import {
 	buildCredential,
+	computeClaimsHash,
 	deriveCertificateId,
 	type CredentialClaims,
 	type VerifiableCredential,
 } from "../utils/credential";
+import {
+	buildCertificatePdfBytes,
+	downloadPdfBytes,
+} from "../utils/certificatePdf";
+import { storeGeneratedCertificatePdf } from "../utils/certificatePdfStore";
 import { extractRevertName } from "../utils/contractErrors";
 import { MonthYearPicker } from "../components/MonthYearPicker";
 
@@ -83,6 +89,10 @@ function contractRevertedFallback(e: unknown): string {
 		);
 	}
 	return `Transaction failed: ${raw}`;
+}
+
+function buildPublicVerifyUrl(certificateId: Hex): string {
+	return `${window.location.origin}/#/verify/cert/${certificateId}`;
 }
 
 // ── Component ───────────────────────────────────────────────────────
@@ -321,6 +331,13 @@ export default function UniverifyIssuerPage() {
 				onBroadcast: (hash) => setTx({ kind: "submitted", hash }),
 			});
 
+			storeGeneratedCertificatePdf({
+				credential: preview.credential,
+				claimsHash: preview.claimsHash,
+				studentAddress: student,
+				issuerName: preview.credential.claims.institutionName,
+			});
+
 			setTx({
 				kind: "success",
 				hash: result.txHash,
@@ -445,6 +462,19 @@ export default function UniverifyIssuerPage() {
 		a.click();
 		document.body.removeChild(a);
 		URL.revokeObjectURL(url);
+	}
+
+	function downloadCredentialPdf(
+		credential: VerifiableCredential,
+		student: Address,
+	) {
+		const bytes = buildCertificatePdfBytes({
+			credential,
+			claimsHash: computeClaimsHash(credential.claims),
+			studentAddress: student,
+			verifyUrl: buildPublicVerifyUrl(credential.certificateId),
+		});
+		downloadPdfBytes(bytes, `certificate-${credential.certificateId.slice(2, 14)}.pdf`);
 	}
 
 	return (
@@ -662,13 +692,14 @@ export default function UniverifyIssuerPage() {
 								<h2 className="section-title mt-2 text-accent-green">
 									Certificate issued
 								</h2>
-								<p className="text-sm text-text-secondary mt-1">
-									The soulbound NFT has been minted to{" "}
-									<code className="font-mono text-xs">{tx.studentAddress}</code>
-									. Give the JSON below to the holder, or share the public
-									verification link so anyone can check the certificate
-									on-chain.
-								</p>
+									<p className="text-sm text-text-secondary mt-1">
+										The soulbound NFT has been minted to{" "}
+										<code className="font-mono text-xs">{tx.studentAddress}</code>
+										. A machine-readable PDF has also been generated automatically
+										and cached in this browser, so it is ready inside{" "}
+										<strong>My Certificates</strong> for viewing, downloading, or
+										optional Bulletin upload.
+									</p>
 								<p className="text-xs text-text-tertiary font-mono break-all mt-2">
 									tx: {tx.hash}
 								</p>
@@ -692,11 +723,27 @@ export default function UniverifyIssuerPage() {
 										>
 											Download .json
 										</button>
+										<button
+											onClick={() =>
+												downloadCredentialPdf(
+													tx.credential,
+													tx.studentAddress,
+												)}
+											className="btn-secondary text-xs"
+										>
+											Download .pdf
+										</button>
 									</div>
 								</div>
 								<pre className="rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 text-xs font-mono text-text-secondary whitespace-pre-wrap break-all overflow-x-auto">
 									{JSON.stringify(tx.credential, null, 2)}
 								</pre>
+								<p className="text-xs text-text-muted mt-2">
+									The exported PDF embeds the canonical credential payload
+									directly in the file, so the public verifier can later extract
+									it without OCR and recompute the same on-chain{" "}
+									<code>claimsHash</code>.
+								</p>
 							</div>
 						</div>
 					)}
@@ -993,7 +1040,7 @@ function CanonicalRow({ label, value }: { label: string; value: string }) {
 }
 
 function VerifyLinkRow({ certificateId }: { certificateId: Hex }) {
-	const url = `${window.location.origin}/#/verify/cert/${certificateId}`;
+	const url = buildPublicVerifyUrl(certificateId);
 	return (
 		<div>
 			<label className="label mb-2">Public verification link</label>
