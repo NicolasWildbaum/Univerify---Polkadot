@@ -34,6 +34,7 @@ const STORAGE_KEY_PREFIX = "univerify:address";
 type TxState =
 	| { kind: "idle" }
 	| { kind: "sending" }
+	| { kind: "submitted"; hash: Hex }
 	| {
 			kind: "success";
 			hash: Hex;
@@ -45,6 +46,7 @@ type TxState =
 type RevokeTxState =
 	| { kind: "idle" }
 	| { kind: "sending" }
+	| { kind: "submitted"; hash: Hex }
 	| { kind: "success"; hash: Hex; certificateId: Hex; internalRef: string }
 	| { kind: "error"; message: string };
 
@@ -246,7 +248,7 @@ export default function UniverifyIssuerPage() {
 		}
 	}, [claims, internalRef, issuerAddress]);
 
-	const busy = tx.kind === "sending" || revokeTx.kind === "sending";
+	const busy = tx.kind === "sending" || tx.kind === "submitted" || revokeTx.kind === "sending" || revokeTx.kind === "submitted";
 	const canSubmit =
 		isAuthorized &&
 		contractAddress.length > 0 &&
@@ -316,6 +318,7 @@ export default function UniverifyIssuerPage() {
 				abi: univerifyAbi as unknown as Abi,
 				functionName: "issueCertificate",
 				args: [preview.certificateId, preview.claimsHash, student],
+				onBroadcast: (hash) => setTx({ kind: "submitted", hash }),
 			});
 
 			setTx({
@@ -395,6 +398,7 @@ export default function UniverifyIssuerPage() {
 				abi: univerifyAbi as unknown as Abi,
 				functionName: "revokeCertificate",
 				args: [certificateId],
+				onBroadcast: (hash) => setRevokeTx({ kind: "submitted", hash }),
 			});
 
 			setRevokeTx({
@@ -444,15 +448,18 @@ export default function UniverifyIssuerPage() {
 	}
 
 	return (
-		<div className="space-y-6 animate-fade-in">
-			<div className="space-y-2">
-				<h1 className="page-title text-polka-500">Issue Credential</h1>
-				<p className="text-text-secondary">
+		<div className="section-stack">
+			<div className="page-hero">
+				<div className="space-y-3">
+					<span className="page-kicker">Issuer Studio</span>
+					<h1 className="page-title text-polka-500">Issue Credential</h1>
+					<p className="page-subtitle">
 					Sign and register a new verifiable academic credential on the Univerify
 					contract. The resulting credential JSON is the artefact you give to the holder —
 					they present it to verifiers, who recompute the hash and check the on-chain
 					record.
-				</p>
+					</p>
+				</div>
 			</div>
 
 			{/* Contract & signer */}
@@ -632,8 +639,13 @@ export default function UniverifyIssuerPage() {
 								disabled={!canSubmit}
 								className="btn-primary"
 							>
-								{tx.kind === "sending" ? "Signing..." : "Issue Certificate"}
+								{tx.kind === "sending" ? "Signing..." : tx.kind === "submitted" ? "Confirming..." : "Issue Certificate"}
 							</button>
+							{tx.kind === "submitted" && (
+								<p className="text-xs text-text-tertiary font-mono break-all">
+									broadcast — waiting for block… tx: {tx.hash}
+								</p>
+							)}
 							{tx.kind === "error" && (
 								<p className="text-sm font-medium text-accent-red">{tx.message}</p>
 							)}
@@ -733,7 +745,8 @@ export default function UniverifyIssuerPage() {
 								disabled={
 									!isAuthorized ||
 									!revokeInternalRef.trim() ||
-									revokeTx.kind === "sending"
+									revokeTx.kind === "sending" ||
+									revokeTx.kind === "submitted"
 								}
 								className="btn-accent"
 								style={{
@@ -743,8 +756,13 @@ export default function UniverifyIssuerPage() {
 										"0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)",
 								}}
 							>
-								{revokeTx.kind === "sending" ? "Signing..." : "Revoke"}
+								{revokeTx.kind === "sending" ? "Signing..." : revokeTx.kind === "submitted" ? "Confirming..." : "Revoke"}
 							</button>
+							{revokeTx.kind === "submitted" && (
+								<p className="text-xs text-text-tertiary font-mono break-all">
+									broadcast — waiting for block… tx: {revokeTx.hash}
+								</p>
+							)}
 							{revokeTx.kind === "error" && (
 								<p className="text-sm font-medium text-accent-red">
 									{revokeTx.message}

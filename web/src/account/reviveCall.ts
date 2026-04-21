@@ -11,10 +11,20 @@
 //
 // Reads still go through viem (`getPublicClient`), which is faster and
 // doesn't require descriptors for the pallet.
+//
+// Performance notes:
+//   - `signSubmitAndWatch` resolves on best-block inclusion (~6-12s on
+//     Paseo) instead of waiting for GRANDPA finality (~30-60s).
+//   - `mappedAccounts` caches the per-session result of `ensureMapped` so
+//     repeated txs skip the WS storage query.
 
 import { encodeFunctionData, type Abi, type Address, type Hex } from "viem";
 import { Binary, FixedSizeBinary, type PolkadotClient, type PolkadotSigner } from "polkadot-api";
 import { getClient } from "../hooks/useChain";
+
+// `${wsUrl}::${evmAddress.toLowerCase()}` — set after a confirmed mapping.
+// Avoids a WS round-trip per-tx once we know the account is mapped.
+const mappedAccounts = new Set<string>();
 
 // Per-call resource ceilings. A Substrate parachain block is ~2 s of
 // reference compute (`WEIGHT_REF_TIME_PER_SECOND = 1e12`) with ~5 MiB of
@@ -50,6 +60,9 @@ interface SubmitOptions {
 	functionName: string;
 	/** Native value to attach to the call. Defaults to 0. */
 	value?: bigint;
+	/** Called as soon as the tx is broadcast (before block inclusion).
+	 *  Use this to transition the UI from "awaiting wallet" to "submitted". */
+	onBroadcast?: (txHash: Hex) => void;
 }
 
 export interface SubmitResult {
@@ -66,6 +79,7 @@ export async function submitReviveCall({
 	functionName,
 	args,
 	value = 0n,
+	onBroadcast,
 }: SubmitOptions): Promise<SubmitResult> {
 	const data = encodeFunctionData({
 		abi,
@@ -84,9 +98,8 @@ export async function submitReviveCall({
 	// `OriginalAccount[h160] == signer` so it can resolve `msg.sender` back
 	// to the 32-byte origin during dispatch. Eth-derived accounts (pubkey
 	// suffix `0xee…ee`) are implicitly mapped; everything else must call
-	// `map_account` once. We always check storage first so the check is
-	// idempotent across reloads.
-	await ensureMapped(api, signer, signerEvmAddress);
+	// `map_account` once. We check a session cache first, then storage.
+	await ensureMapped(api, signer, signerEvmAddress, wsUrl);
 
 	const tx = api.tx.Revive.call({
 		dest: FixedSizeBinary.fromHex(contractAddress),
@@ -99,15 +112,39 @@ export async function submitReviveCall({
 		data: Binary.fromHex(data),
 	});
 
-	const result = await tx.signAndSubmit(signer);
-	if (!result.ok) {
-		const err = result.dispatchError;
-		throw new ReviveDispatchError(err);
-	}
-	return {
-		txHash: result.txHash as Hex,
-		block: result.block,
-	};
+	return signSubmitBestBlock(tx, signer, onBroadcast);
+}
+
+// Resolves on best-block inclusion (~6-12s on Paseo) instead of waiting for
+// GRANDPA finality (~30-60s). Calls `onBroadcast` once the tx hash is known.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function signSubmitBestBlock(tx: any, signer: PolkadotSigner, onBroadcast?: (txHash: Hex) => void): Promise<SubmitResult> {
+	return new Promise((resolve, reject) => {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const sub = tx.signSubmitAndWatch(signer).subscribe({
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			next(event: any) {
+				if (event.type === "broadcasted") {
+					onBroadcast?.(event.txHash as Hex);
+				} else if (event.type === "txBestBlocksState") {
+					if (!event.found) {
+						if (event.isValid === false) {
+							sub.unsubscribe();
+							reject(new Error("Transaction was rejected from the pool."));
+						}
+						return;
+					}
+					sub.unsubscribe();
+					if (!event.ok) {
+						reject(new ReviveDispatchError(event.dispatchError));
+					} else {
+						resolve({ txHash: event.txHash as Hex, block: event.block });
+					}
+				}
+			},
+			error: reject,
+		});
+	});
 }
 
 // Register the signer's (AccountId32 → H160) pairing in pallet-revive if it
@@ -119,17 +156,22 @@ async function ensureMapped(
 	api: any,
 	signer: PolkadotSigner,
 	signerEvmAddress: Address,
+	wsUrl: string,
 ): Promise<void> {
+	const cacheKey = `${wsUrl}::${signerEvmAddress.toLowerCase()}`;
+	if (mappedAccounts.has(cacheKey)) return;
+
 	const existing = await api.query.Revive.OriginalAccount.getValue(
 		FixedSizeBinary.fromHex(signerEvmAddress),
 	);
-	if (existing !== undefined) return;
+	if (existing !== undefined) {
+		mappedAccounts.add(cacheKey);
+		return;
+	}
 
 	const mapTx = api.tx.Revive.map_account();
-	const mapResult = await mapTx.signAndSubmit(signer);
-	if (!mapResult.ok) {
-		throw new ReviveDispatchError(mapResult.dispatchError);
-	}
+	await signSubmitBestBlock(mapTx, signer);
+	mappedAccounts.add(cacheKey);
 }
 
 export class ReviveDispatchError extends Error {

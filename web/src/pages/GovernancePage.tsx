@@ -81,6 +81,7 @@ type LoadState =
 type TxState =
 	| { kind: "idle" }
 	| { kind: "sending"; label: string }
+	| { kind: "submitted"; hash: Hex; label: string }
 	| { kind: "success"; hash: Hex; label: string }
 	| { kind: "error"; message: string };
 
@@ -208,6 +209,7 @@ export default function GovernancePage() {
 					abi: univerifyAbi as unknown as import("viem").Abi,
 					functionName,
 					args,
+					onBroadcast: (hash) => setTx({ kind: "submitted", hash, label }),
 				});
 				setTx({ kind: "success", hash: result.txHash, label });
 				refresh();
@@ -353,18 +355,21 @@ export default function GovernancePage() {
 	const proposeRemovalInputLooksLikeSs58 =
 		proposeTarget.trim().length > 0 && !proposeTarget.trim().startsWith("0x");
 
-	const txDisabled = !isWalletConnected || tx.kind === "sending";
+	const txDisabled = !isWalletConnected || tx.kind === "sending" || tx.kind === "submitted";
 
 	// ── Render ───────────────────────────────────────────────────────
 	return (
-		<div className="space-y-6 animate-fade-in">
-			<div className="space-y-2">
-				<h1 className="page-title text-polka-500">Governance</h1>
-				<p className="text-text-secondary">
+		<div className="section-stack">
+			<div className="page-hero">
+				<div className="space-y-3">
+					<span className="page-kicker">Federation Control</span>
+					<h1 className="page-title text-polka-500">Governance</h1>
+					<p className="page-subtitle">
 					Federated registry of university issuers. Active universities collectively
 					approve new applicants and decide — by vote — whether to remove existing
 					members. There is no privileged owner or emergency admin.
-				</p>
+					</p>
+				</div>
 			</div>
 
 			{/* Contract & caller */}
@@ -466,9 +471,9 @@ export default function GovernancePage() {
 											disabled={disabled}
 											className="btn-primary text-xs"
 										>
-											{tx.kind === "sending" &&
+											{(tx.kind === "sending" || tx.kind === "submitted") &&
 											tx.label === `Approve ${shortAddr(i.account)}`
-												? "Signing..."
+												? tx.kind === "submitted" ? "Confirming..." : "Signing..."
 												: "Approve"}
 										</button>
 										{callerAlreadyApproved && (
@@ -554,8 +559,8 @@ export default function GovernancePage() {
 						disabled={txDisabled || !contractAddress || callerHasApplied}
 						className="btn-primary"
 					>
-						{tx.kind === "sending" && tx.label === "Apply"
-							? "Signing..."
+						{(tx.kind === "sending" || tx.kind === "submitted") && tx.label === "Apply"
+							? tx.kind === "submitted" ? "Confirming..." : "Signing..."
 							: callerCanReapply
 								? "Re-apply as issuer"
 								: "Apply as issuer"}
@@ -626,8 +631,8 @@ export default function GovernancePage() {
 							}
 							className="btn-primary text-xs"
 						>
-							{tx.kind === "sending" && tx.label.startsWith("Propose removal")
-								? "Signing..."
+							{(tx.kind === "sending" || tx.kind === "submitted") && tx.label.startsWith("Propose removal")
+								? tx.kind === "submitted" ? "Confirming..." : "Signing..."
 								: "Propose removal"}
 						</button>
 						{!callerIsActive && isWalletConnected && (
@@ -706,10 +711,10 @@ export default function GovernancePage() {
 												disabled={voteDisabled}
 												className="btn-primary text-xs"
 											>
-												{tx.kind === "sending" &&
+												{(tx.kind === "sending" || tx.kind === "submitted") &&
 												tx.label ===
 													`Vote to remove ${shortAddr(p.target)}`
-													? "Signing..."
+													? tx.kind === "submitted" ? "Confirming..." : "Signing..."
 													: "Vote to remove"}
 											</button>
 											{callerVoted && (
@@ -880,6 +885,16 @@ function TxBanner({ tx }: { tx: TxState }) {
 			<p className="text-sm text-text-tertiary">
 				Signing <code>{tx.label}</code>… approve in your wallet.
 			</p>
+		);
+	}
+	if (tx.kind === "submitted") {
+		return (
+			<div className="rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 text-sm text-text-secondary animate-fade-in">
+				<p>
+					<code>{tx.label}</code> broadcast — waiting for block inclusion…
+				</p>
+				<p className="text-xs text-text-tertiary font-mono break-all mt-1">tx: {tx.hash}</p>
+			</div>
 		);
 	}
 	if (tx.kind === "success") {
