@@ -34,6 +34,13 @@ import {
 } from "../account/wallet";
 import { submitReviveCall } from "../account/reviveCall";
 import { extractRevertName, type UniverifyErrorName } from "../utils/contractErrors";
+import {
+	serializeMetadata,
+	computeMetadataHash,
+	hasOptionalMetadata,
+	type IssuerMetadata,
+} from "../utils/issuerMetadata";
+import { uploadToBulletin } from "../hooks/useBulletin";
 
 const STORAGE_KEY_PREFIX = "univerify:governance:address";
 const ZERO_BYTES32: Hex = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -45,6 +52,7 @@ interface IssuerView {
 	account: Address;
 	status: number;
 	metadataHash: Hex;
+	bulletinRef: string;
 	name: string;
 	registeredAt: bigint;
 	approvalCount: number;
@@ -108,7 +116,15 @@ export default function GovernancePage() {
 
 	// Apply form
 	const [applyName, setApplyName] = useState("");
-	const [applyMetadataHash, setApplyMetadataHash] = useState<Hex>(ZERO_BYTES32);
+	const [applyMeta, setApplyMeta] = useState<Omit<IssuerMetadata, "schemaVersion" | "name">>({});
+	// Tracks the Bulletin Chain upload step separately from the contract tx.
+	type BulletinState =
+		| { kind: "idle" }
+		| { kind: "uploading" }
+		| { kind: "done"; blockNumber: number }
+		| { kind: "skipped" }
+		| { kind: "error"; message: string };
+	const [bulletinState, setBulletinState] = useState<BulletinState>({ kind: "idle" });
 
 	// Propose-removal form
 	const [proposeTarget, setProposeTarget] = useState<string>("");
@@ -227,7 +243,37 @@ export default function GovernancePage() {
 			setTx({ kind: "error", message: "Enter a university name." });
 			return;
 		}
-		await runTx("Apply", "applyAsIssuer", [name, applyMetadataHash]);
+
+		const meta: IssuerMetadata = { schemaVersion: "1", name, ...applyMeta };
+		const withOptional = hasOptionalMetadata(applyMeta);
+
+		let metadataHash: Hex = ZERO_BYTES32;
+		let bulletinRef = "";
+
+		if (withOptional) {
+			if (!signer) {
+				setTx({ kind: "error", message: "Connect a wallet to upload metadata." });
+				return;
+			}
+			const jsonBytes = serializeMetadata(meta);
+			metadataHash = computeMetadataHash(jsonBytes);
+
+			setBulletinState({ kind: "uploading" });
+			try {
+				const result = await uploadToBulletin(jsonBytes, signer);
+				bulletinRef = String(result.blockNumber);
+				setBulletinState({ kind: "done", blockNumber: result.blockNumber });
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				setBulletinState({ kind: "error", message: msg });
+				setTx({ kind: "error", message: `Bulletin Chain upload failed: ${msg}` });
+				return;
+			}
+		} else {
+			setBulletinState({ kind: "skipped" });
+		}
+
+		await runTx("Apply", "applyAsIssuer", [name, metadataHash, bulletinRef]);
 	}
 
 	async function handleApprove(candidate: Address) {
@@ -523,9 +569,10 @@ export default function GovernancePage() {
 						</>
 					)}
 				</p>
-				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+				<div className="space-y-4">
+					{/* Required: name */}
 					<div>
-						<label className="label">University name</label>
+						<label className="label">University name <span className="text-accent-red">*</span></label>
 						<input
 							type="text"
 							value={applyName}
@@ -535,35 +582,82 @@ export default function GovernancePage() {
 						/>
 						{data?.maxNameLength ? (
 							<p className="text-xs text-text-muted mt-1">
-								Max {data.maxNameLength.toString()} bytes (UTF-8).
+								Max {data.maxNameLength.toString()} bytes (UTF-8). Stored on-chain.
 							</p>
 						) : null}
 					</div>
-					<div>
-						<label className="label">Metadata hash (bytes32)</label>
-						<input
-							type="text"
-							value={applyMetadataHash}
-							onChange={(e) => setApplyMetadataHash(e.target.value as Hex)}
-							className="input-field w-full"
-							spellCheck={false}
-						/>
-						<p className="text-xs text-text-muted mt-1">
-							Optional pointer to off-chain metadata. Leave as zero if unused.
-						</p>
+
+					{/* Optional metadata — uploaded to Bulletin Chain */}
+					<div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 space-y-3">
+						<div>
+							<p className="text-xs font-medium text-text-tertiary uppercase tracking-wider">
+								Optional metadata — stored on Bulletin Chain
+							</p>
+							<p className="text-xs text-text-muted mt-1">
+								Fill any field to enable Bulletin Chain upload. The JSON is hashed with
+								keccak256 and the hash is committed on-chain as{" "}
+								<code>metadataHash</code>. The block number where it was stored is
+								recorded as <code>bulletinRef</code>. Leave all fields empty to skip.
+							</p>
+						</div>
+						<div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+							<MetaInput
+								label="Country"
+								value={applyMeta.country ?? ""}
+								placeholder="Argentina"
+								onChange={(v) => setApplyMeta((m) => ({ ...m, country: v || undefined }))}
+							/>
+							<MetaInput
+								label="Website"
+								value={applyMeta.website ?? ""}
+								placeholder="https://uba.edu.ar"
+								onChange={(v) => setApplyMeta((m) => ({ ...m, website: v || undefined }))}
+							/>
+							<MetaInput
+								label="Accreditation body"
+								value={applyMeta.accreditationBody ?? ""}
+								placeholder="CONEAU"
+								onChange={(v) => setApplyMeta((m) => ({ ...m, accreditationBody: v || undefined }))}
+							/>
+							<MetaInput
+								label="Accreditation ID"
+								value={applyMeta.accreditationId ?? ""}
+								placeholder="RES-123/2024"
+								onChange={(v) => setApplyMeta((m) => ({ ...m, accreditationId: v || undefined }))}
+							/>
+						</div>
+						{/* Bulletin status feedback */}
+						{bulletinState.kind === "uploading" && (
+							<p className="text-xs text-text-tertiary">
+								Uploading metadata to Bulletin Chain… approve in your wallet.
+							</p>
+						)}
+						{bulletinState.kind === "done" && (
+							<p className="text-xs text-accent-green">
+								✓ Metadata uploaded to Bulletin Chain — block {bulletinState.blockNumber}
+							</p>
+						)}
+						{bulletinState.kind === "error" && (
+							<p className="text-xs text-accent-red">
+								Bulletin upload failed: {bulletinState.message}
+							</p>
+						)}
 					</div>
 				</div>
+
 				<div className="flex flex-wrap items-center gap-3">
 					<button
 						onClick={handleApply}
 						disabled={txDisabled || !contractAddress || callerHasApplied}
 						className="btn-primary"
 					>
-						{(tx.kind === "sending" || tx.kind === "submitted") && tx.label === "Apply"
-							? tx.kind === "submitted" ? "Confirming..." : "Signing..."
-							: callerCanReapply
-								? "Re-apply as issuer"
-								: "Apply as issuer"}
+						{bulletinState.kind === "uploading"
+							? "Uploading to Bulletin…"
+							: (tx.kind === "sending" || tx.kind === "submitted") && tx.label === "Apply"
+								? tx.kind === "submitted" ? "Confirming..." : "Signing..."
+								: callerCanReapply
+									? "Re-apply as issuer"
+									: "Apply as issuer"}
 					</button>
 					{!isWalletConnected && (
 						<span className="text-xs text-text-tertiary">
@@ -846,9 +940,40 @@ function IssuerRow({ issuer, compact = false }: { issuer: IssuerView; compact?: 
 					<code className="text-xs text-text-tertiary font-mono break-all">
 						{issuer.account}
 					</code>
+					{issuer.bulletinRef && (
+						<p className="text-xs text-text-muted mt-0.5">
+							Metadata on Bulletin Chain — block{" "}
+							<span className="font-mono text-text-secondary">{issuer.bulletinRef}</span>
+						</p>
+					)}
 				</div>
 				<StatusBadge status={issuer.status} />
 			</div>
+		</div>
+	);
+}
+
+function MetaInput({
+	label,
+	value,
+	placeholder,
+	onChange,
+}: {
+	label: string;
+	value: string;
+	placeholder: string;
+	onChange: (v: string) => void;
+}) {
+	return (
+		<div>
+			<label className="label">{label}</label>
+			<input
+				type="text"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				placeholder={placeholder}
+				className="input-field w-full"
+			/>
 		</div>
 	);
 }
@@ -990,6 +1115,7 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 		account: Address;
 		status: number | bigint;
 		metadataHash: Hex;
+		bulletinRef: string;
 		name: string;
 		registeredAt: bigint;
 		approvalCount: number | bigint;
@@ -999,6 +1125,7 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 		account: s.account,
 		status: Number(s.status),
 		metadataHash: s.metadataHash,
+		bulletinRef: s.bulletinRef ?? "",
 		name: s.name,
 		registeredAt: s.registeredAt,
 		approvalCount: Number(s.approvalCount),
