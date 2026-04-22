@@ -74,6 +74,7 @@ interface RemovalProposalView {
 interface RegistryView {
 	approvalThreshold: number;
 	activeIssuerCount: number;
+	governanceVotingPeriod: bigint;
 	maxNameLength: bigint;
 	issuers: IssuerView[];
 	/** Map of `${candidate.toLowerCase()}` → set of approver addresses (lowercased). */
@@ -267,7 +268,9 @@ export default function GovernancePage() {
 				// metadata can be fetched from paseo-ipfs.polkadot.io permanently,
 				// without needing an archive node for chain_getBlock.
 				const b2Hash = blake2b(jsonBytes, undefined, 32);
-				const b2Hex = `0x${Array.from(b2Hash).map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+				const b2Hex = `0x${Array.from(b2Hash)
+					.map((b) => b.toString(16).padStart(2, "0"))
+					.join("")}`;
 				bulletinRef = hexHashToCid(b2Hex);
 				setBulletinState({ kind: "done", blockNumber: result.blockNumber });
 			} catch (err) {
@@ -310,11 +313,7 @@ export default function GovernancePage() {
 	}
 
 	async function handleVoteForRemoval(proposalId: bigint, target: Address) {
-		await runTx(
-			`Vote to remove ${shortAddr(target)}`,
-			"voteForRemoval",
-			[proposalId],
-		);
+		await runTx(`Vote to remove ${shortAddr(target)}`, "voteForRemoval", [proposalId]);
 	}
 
 	// ── Derived view-model ───────────────────────────────────────────
@@ -418,9 +417,9 @@ export default function GovernancePage() {
 					<span className="page-kicker">Federation Control</span>
 					<h1 className="page-title text-polka-500">Governance</h1>
 					<p className="page-subtitle">
-					Federated registry of university issuers. Active universities collectively
-					approve new applicants and decide — by vote — whether to remove existing
-					members. There is no privileged owner or emergency admin.
+						Federated registry of university issuers. Active universities collectively
+						approve new applicants and decide — by vote — whether to remove existing
+						members. There is no privileged owner or emergency admin.
 					</p>
 				</div>
 			</div>
@@ -491,6 +490,12 @@ export default function GovernancePage() {
 			{/* Waitlist */}
 			<div className="card space-y-3">
 				<h2 className="section-title text-accent-orange">Waitlist (Pending)</h2>
+				{data && (
+					<p className="text-xs text-text-muted">
+						Applications expire automatically if they do not reach the approval
+						threshold within {formatVotingWindow(data.governanceVotingPeriod)}.
+					</p>
+				)}
 				{!data ? (
 					<p className="text-sm text-text-muted">Connect to a contract to load.</p>
 				) : pendingIssuers.length === 0 ? (
@@ -519,6 +524,13 @@ export default function GovernancePage() {
 										<span className="text-xs text-text-muted">
 											{i.approvalCount} / {data.approvalThreshold} approvals
 										</span>
+										<span className="text-xs text-text-muted">
+											Expires{" "}
+											{formatDeadline(
+												i.registeredAt,
+												data.governanceVotingPeriod,
+											)}
+										</span>
 										<button
 											onClick={() => handleApprove(i.account)}
 											disabled={disabled}
@@ -526,7 +538,9 @@ export default function GovernancePage() {
 										>
 											{(tx.kind === "sending" || tx.kind === "submitted") &&
 											tx.label === `Approve ${shortAddr(i.account)}`
-												? tx.kind === "submitted" ? "Confirming..." : "Signing..."
+												? tx.kind === "submitted"
+													? "Confirming..."
+													: "Signing..."
 												: "Approve"}
 										</button>
 										{callerAlreadyApproved && (
@@ -560,12 +574,11 @@ export default function GovernancePage() {
 				<p className="text-text-secondary text-sm">
 					{callerCanReapply ? (
 						<>
-							This account was removed from the registry by a federated
-							governance vote. It can re-apply to re-enter the waitlist. After{" "}
-							<strong>{data?.approvalThreshold ?? "N"}</strong> fresh approvals
-							from existing Active universities, it becomes Active again
-							automatically — previous-round approvals do <em>not</em> carry
-							over.
+							This account was removed from the registry by a federated governance
+							vote. It can re-apply to re-enter the waitlist. After{" "}
+							<strong>{data?.approvalThreshold ?? "N"}</strong> fresh approvals from
+							existing Active universities, it becomes Active again automatically —
+							previous-round approvals do <em>not</em> carry over.
 						</>
 					) : (
 						<>
@@ -579,7 +592,9 @@ export default function GovernancePage() {
 				<div className="space-y-4">
 					{/* Required: name */}
 					<div>
-						<label className="label">University name <span className="text-accent-red">*</span></label>
+						<label className="label">
+							University name <span className="text-accent-red">*</span>
+						</label>
 						<input
 							type="text"
 							value={applyName}
@@ -601,10 +616,11 @@ export default function GovernancePage() {
 								Optional metadata — stored on Bulletin Chain
 							</p>
 							<p className="text-xs text-text-muted mt-1">
-								Fill any field to enable Bulletin Chain upload. The JSON is hashed with
-								keccak256 and the hash is committed on-chain as{" "}
+								Fill any field to enable Bulletin Chain upload. The JSON is hashed
+								with keccak256 and the hash is committed on-chain as{" "}
 								<code>metadataHash</code>. The block number where it was stored is
-								recorded as <code>bulletinRef</code>. Leave all fields empty to skip.
+								recorded as <code>bulletinRef</code>. Leave all fields empty to
+								skip.
 							</p>
 						</div>
 						<div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -612,25 +628,36 @@ export default function GovernancePage() {
 								label="Country"
 								value={applyMeta.country ?? ""}
 								placeholder="Argentina"
-								onChange={(v) => setApplyMeta((m) => ({ ...m, country: v || undefined }))}
+								onChange={(v) =>
+									setApplyMeta((m) => ({ ...m, country: v || undefined }))
+								}
 							/>
 							<MetaInput
 								label="Website"
 								value={applyMeta.website ?? ""}
 								placeholder="https://uba.edu.ar"
-								onChange={(v) => setApplyMeta((m) => ({ ...m, website: v || undefined }))}
+								onChange={(v) =>
+									setApplyMeta((m) => ({ ...m, website: v || undefined }))
+								}
 							/>
 							<MetaInput
 								label="Accreditation body"
 								value={applyMeta.accreditationBody ?? ""}
 								placeholder="CONEAU"
-								onChange={(v) => setApplyMeta((m) => ({ ...m, accreditationBody: v || undefined }))}
+								onChange={(v) =>
+									setApplyMeta((m) => ({
+										...m,
+										accreditationBody: v || undefined,
+									}))
+								}
 							/>
 							<MetaInput
 								label="Accreditation ID"
 								value={applyMeta.accreditationId ?? ""}
 								placeholder="RES-123/2024"
-								onChange={(v) => setApplyMeta((m) => ({ ...m, accreditationId: v || undefined }))}
+								onChange={(v) =>
+									setApplyMeta((m) => ({ ...m, accreditationId: v || undefined }))
+								}
 							/>
 						</div>
 						{/* Bulletin status feedback */}
@@ -641,7 +668,8 @@ export default function GovernancePage() {
 						)}
 						{bulletinState.kind === "done" && (
 							<p className="text-xs text-accent-green">
-								✓ Metadata uploaded to Bulletin Chain — block {bulletinState.blockNumber}
+								✓ Metadata uploaded to Bulletin Chain — block{" "}
+								{bulletinState.blockNumber}
 							</p>
 						)}
 						{bulletinState.kind === "error" && (
@@ -660,8 +688,11 @@ export default function GovernancePage() {
 					>
 						{bulletinState.kind === "uploading"
 							? "Uploading to Bulletin…"
-							: (tx.kind === "sending" || tx.kind === "submitted") && tx.label === "Apply"
-								? tx.kind === "submitted" ? "Confirming..." : "Signing..."
+							: (tx.kind === "sending" || tx.kind === "submitted") &&
+								  tx.label === "Apply"
+								? tx.kind === "submitted"
+									? "Confirming..."
+									: "Signing..."
 								: callerCanReapply
 									? "Re-apply as issuer"
 									: "Apply as issuer"}
@@ -690,9 +721,10 @@ export default function GovernancePage() {
 					<h2 className="section-title text-accent-red">Remove an issuer (governance)</h2>
 					<p className="text-xs text-text-muted mt-1">
 						Active issuers can propose the removal of another active issuer. The
-						proposal executes automatically once {data?.approvalThreshold ?? "N"}{" "}
-						active issuers (including the proposer) have voted in favour. There is
-						no other path to remove an issuer — no owner, no admin.
+						proposal executes automatically once {data?.approvalThreshold ?? "N"} active
+						issuers (including the proposer) have voted in favour. There is no other
+						path to remove an issuer — no owner, no admin. Unresolved proposals expire
+						after {data ? formatVotingWindow(data.governanceVotingPeriod) : "7 days"}.
 					</p>
 				</div>
 
@@ -732,8 +764,11 @@ export default function GovernancePage() {
 							}
 							className="btn-primary text-xs"
 						>
-							{(tx.kind === "sending" || tx.kind === "submitted") && tx.label.startsWith("Propose removal")
-								? tx.kind === "submitted" ? "Confirming..." : "Signing..."
+							{(tx.kind === "sending" || tx.kind === "submitted") &&
+							tx.label.startsWith("Propose removal")
+								? tx.kind === "submitted"
+									? "Confirming..."
+									: "Signing..."
 								: "Propose removal"}
 						</button>
 						{!callerIsActive && isWalletConnected && (
@@ -755,18 +790,13 @@ export default function GovernancePage() {
 					) : (
 						<ul className="space-y-3">
 							{openProposals.map((p) => {
-								const callerVoted =
-									callerKey !== null && p.voters.has(callerKey);
+								const callerVoted = callerKey !== null && p.voters.has(callerKey);
 								const callerIsTarget =
 									callerKey !== null && p.target.toLowerCase() === callerKey;
 								const voteDisabled =
-									txDisabled ||
-									!callerIsActive ||
-									callerVoted ||
-									callerIsTarget;
+									txDisabled || !callerIsActive || callerVoted || callerIsTarget;
 								const targetIssuer = data.issuers.find(
-									(i) =>
-										i.account.toLowerCase() === p.target.toLowerCase(),
+									(i) => i.account.toLowerCase() === p.target.toLowerCase(),
 								);
 								return (
 									<li
@@ -786,7 +816,7 @@ export default function GovernancePage() {
 												Proposal #{p.proposalId.toString()}
 											</span>
 										</div>
-										<div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-text-muted">
+										<div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs text-text-muted">
 											<div>
 												Proposed by{" "}
 												<code className="font-mono text-text-secondary">
@@ -803,6 +833,13 @@ export default function GovernancePage() {
 													Number(p.createdAt) * 1000,
 												).toLocaleString()}
 											</div>
+											<div>
+												Expires{" "}
+												{formatDeadline(
+													p.createdAt,
+													data.governanceVotingPeriod,
+												)}
+											</div>
 										</div>
 										<div className="flex flex-wrap items-center gap-3">
 											<button
@@ -812,10 +849,12 @@ export default function GovernancePage() {
 												disabled={voteDisabled}
 												className="btn-primary text-xs"
 											>
-												{(tx.kind === "sending" || tx.kind === "submitted") &&
-												tx.label ===
-													`Vote to remove ${shortAddr(p.target)}`
-													? tx.kind === "submitted" ? "Confirming..." : "Signing..."
+												{(tx.kind === "sending" ||
+													tx.kind === "submitted") &&
+												tx.label === `Vote to remove ${shortAddr(p.target)}`
+													? tx.kind === "submitted"
+														? "Confirming..."
+														: "Signing..."
 													: "Vote to remove"}
 											</button>
 											{callerVoted && (
@@ -848,10 +887,10 @@ export default function GovernancePage() {
 					<h2 className="section-title text-accent-red">Removed (by governance)</h2>
 					<p className="text-xs text-text-muted">
 						These universities were removed by federated vote. While Removed, they
-						cannot issue, revoke, approve, or participate in governance, but they
-						may re-apply at any time to re-enter the waitlist — they'll need a
-						fresh round of approvals to become Active again. Historical
-						certificates they previously issued remain verifiable on-chain.
+						cannot issue, revoke, approve, or participate in governance, but they may
+						re-apply at any time to re-enter the waitlist — they'll need a fresh round
+						of approvals to become Active again. Historical certificates they previously
+						issued remain verifiable on-chain.
 					</p>
 					<ul className="space-y-2">
 						{removedIssuers.map((i) => (
@@ -1064,37 +1103,44 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 
 	let threshold: unknown;
 	let activeCount: unknown;
+	let governanceVotingPeriod: unknown;
 	let maxName: unknown;
 	let count: unknown;
 	let proposalCount: unknown;
 	try {
-		[threshold, activeCount, maxName, count, proposalCount] = await Promise.all([
-			client.readContract({
-				address,
-				abi: univerifyAbi,
-				functionName: "approvalThreshold",
-			}),
-			client.readContract({
-				address,
-				abi: univerifyAbi,
-				functionName: "activeIssuerCount",
-			}),
-			client.readContract({
-				address,
-				abi: univerifyAbi,
-				functionName: "MAX_NAME_LENGTH",
-			}),
-			client.readContract({
-				address,
-				abi: univerifyAbi,
-				functionName: "issuerCount",
-			}),
-			client.readContract({
-				address,
-				abi: univerifyAbi,
-				functionName: "removalProposalCount",
-			}),
-		]);
+		[threshold, activeCount, governanceVotingPeriod, maxName, count, proposalCount] =
+			await Promise.all([
+				client.readContract({
+					address,
+					abi: univerifyAbi,
+					functionName: "approvalThreshold",
+				}),
+				client.readContract({
+					address,
+					abi: univerifyAbi,
+					functionName: "activeIssuerCount",
+				}),
+				client.readContract({
+					address,
+					abi: univerifyAbi,
+					functionName: "GOVERNANCE_VOTING_PERIOD",
+				}),
+				client.readContract({
+					address,
+					abi: univerifyAbi,
+					functionName: "MAX_NAME_LENGTH",
+				}),
+				client.readContract({
+					address,
+					abi: univerifyAbi,
+					functionName: "issuerCount",
+				}),
+				client.readContract({
+					address,
+					abi: univerifyAbi,
+					functionName: "removalProposalCount",
+				}),
+			]);
 	} catch (err) {
 		throw explainRegistryReadError(address, err);
 	}
@@ -1132,15 +1178,17 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 		approvalCount: number | bigint;
 	}>;
 
-	const issuers: IssuerView[] = issuerStructs.map((s) => ({
-		account: s.account,
-		status: Number(s.status),
-		metadataHash: s.metadataHash,
-		bulletinRef: s.bulletinRef ?? "",
-		name: s.name,
-		registeredAt: s.registeredAt,
-		approvalCount: Number(s.approvalCount),
-	}));
+	const issuers: IssuerView[] = issuerStructs
+		.map((s) => ({
+			account: s.account,
+			status: Number(s.status),
+			metadataHash: s.metadataHash,
+			bulletinRef: s.bulletinRef ?? "",
+			name: s.name,
+			registeredAt: s.registeredAt,
+			approvalCount: Number(s.approvalCount),
+		}))
+		.filter((issuer) => issuer.status !== IssuerStatus.None);
 
 	const pending = issuers.filter((i) => i.status === IssuerStatus.Pending);
 	const active = issuers.filter((i) => i.status === IssuerStatus.Active);
@@ -1219,6 +1267,7 @@ async function loadRegistry(client: ReadClient, address: Address): Promise<Regis
 	return {
 		approvalThreshold: Number(threshold as number | bigint),
 		activeIssuerCount: Number(activeCount as number | bigint),
+		governanceVotingPeriod: governanceVotingPeriod as bigint,
 		maxNameLength: maxName as bigint,
 		issuers,
 		approvals,
@@ -1231,6 +1280,7 @@ function explainRegistryReadError(address: Address, err: unknown): Error {
 	if (
 		message.includes('function "approvalThreshold" returned no data') ||
 		message.includes('function "activeIssuerCount" returned no data') ||
+		message.includes('function "GOVERNANCE_VOTING_PERIOD" returned no data') ||
 		message.includes('function "MAX_NAME_LENGTH" returned no data') ||
 		message.includes('function "issuerCount" returned no data') ||
 		message.includes('function "removalProposalCount" returned no data')
@@ -1269,7 +1319,7 @@ function errorHint(name: UniverifyErrorName): string | null {
 				"update `web/src/config/deployments.ts`."
 			);
 		case "IssuerNotPending":
-			return "Target issuer is not Pending.";
+			return "Target issuer is not Pending. The application may already have activated or expired.";
 		case "IssuerNotActive":
 			return "Target issuer is not currently Active.";
 		case "IssuerNotFound":
@@ -1283,7 +1333,7 @@ function errorHint(name: UniverifyErrorName): string | null {
 		case "RemovalProposalAlreadyOpen":
 			return "There is already an open removal proposal for this issuer.";
 		case "RemovalProposalNotFound":
-			return "That removal proposal does not exist.";
+			return "That removal proposal does not exist. It may already have expired.";
 		case "RemovalProposalAlreadyExecuted":
 			return "That removal proposal has already been executed.";
 		case "AlreadyVotedForRemoval":
@@ -1319,6 +1369,15 @@ function resolveAddress(raw: string): Address | null {
 	const info = getSs58AddressInfo(trimmed);
 	if (!info.isValid) return null;
 	return ss58ToEvmAddress(trimmed);
+}
+
+function formatVotingWindow(seconds: bigint): string {
+	const days = Number(seconds / 86400n);
+	return days === 1 ? "1 day" : `${days} days`;
+}
+
+function formatDeadline(startedAt: bigint, windowSeconds: bigint): string {
+	return new Date(Number(startedAt + windowSeconds) * 1000).toLocaleString();
 }
 
 function shortAddr(addr: string): string {

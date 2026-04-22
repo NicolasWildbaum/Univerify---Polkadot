@@ -243,6 +243,13 @@ export const univerifyAbi = [
 	},
 	{
 		type: "function",
+		name: "GOVERNANCE_VOTING_PERIOD",
+		inputs: [],
+		outputs: [{ name: "", type: "uint64" }],
+		stateMutability: "view",
+	},
+	{
+		type: "function",
 		name: "MAX_NAME_LENGTH",
 		inputs: [],
 		outputs: [{ name: "", type: "uint256" }],
