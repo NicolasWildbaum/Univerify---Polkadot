@@ -41,6 +41,8 @@ import {
 	type IssuerMetadata,
 } from "../utils/issuerMetadata";
 import { uploadToBulletin } from "../hooks/useBulletin";
+import { blake2b } from "blakejs";
+import { hexHashToCid } from "../utils/cid";
 
 const STORAGE_KEY_PREFIX = "univerify:governance:address";
 const ZERO_BYTES32: Hex = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -261,7 +263,12 @@ export default function GovernancePage() {
 			setBulletinState({ kind: "uploading" });
 			try {
 				const result = await uploadToBulletin(jsonBytes, signer);
-				bulletinRef = String(result.blockNumber);
+				// Derive the IPFS CID from the blake2b-256 content hash so the
+				// metadata can be fetched from paseo-ipfs.polkadot.io permanently,
+				// without needing an archive node for chain_getBlock.
+				const b2Hash = blake2b(jsonBytes, undefined, 32);
+				const b2Hex = `0x${Array.from(b2Hash).map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+				bulletinRef = hexHashToCid(b2Hex);
 				setBulletinState({ kind: "done", blockNumber: result.blockNumber });
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -942,8 +949,12 @@ function IssuerRow({ issuer, compact = false }: { issuer: IssuerView; compact?: 
 					</code>
 					{issuer.bulletinRef && (
 						<p className="text-xs text-text-muted mt-0.5">
-							Metadata on Bulletin Chain — block{" "}
-							<span className="font-mono text-text-secondary">{issuer.bulletinRef}</span>
+							Metadata on Bulletin Chain —{" "}
+							<span className="font-mono text-text-secondary">
+								{issuer.bulletinRef.includes(":")
+									? `block ${issuer.bulletinRef.split(":")[0]}`
+									: `CID ${issuer.bulletinRef.slice(0, 16)}…`}
+							</span>
 						</p>
 					)}
 				</div>

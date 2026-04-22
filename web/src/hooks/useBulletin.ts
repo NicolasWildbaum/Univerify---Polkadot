@@ -4,6 +4,7 @@ import { withPolkadotSdkCompat } from "polkadot-api/polkadot-sdk-compat";
 import { bulletin } from "@polkadot-api/descriptors";
 import { blake2b } from "blakejs";
 import { computeMetadataHash, type IssuerMetadata } from "../utils/issuerMetadata";
+import { ipfsUrl } from "../utils/cid";
 
 const BULLETIN_WS = "wss://paseo-bulletin-rpc.polkadot.io";
 const MAX_FILE_SIZE = 8 * 1024 * 1024; // 8 MiB
@@ -27,9 +28,6 @@ export interface BulletinUploadResult {
 	blockHash: string;
 }
 
-/**
- * Check if an account is authorized to store data on the Bulletin Chain.
- */
 export async function checkBulletinAuthorization(
 	address: string,
 	dataSize: number,
@@ -46,10 +44,6 @@ export async function checkBulletinAuthorization(
 	}
 }
 
-/**
- * Upload file bytes to the Bulletin Chain via TransactionStorage.store().
- * Returns the block number and hash where the data was included.
- */
 export async function uploadToBulletin(
 	fileBytes: Uint8Array,
 	signer: PolkadotSigner,
@@ -91,14 +85,6 @@ export async function uploadToBulletin(
 	});
 }
 
-/**
- * Verify that data with a given keccak256 hash exists on the Bulletin Chain at
- * the specified block. Uses TransactionStorage.Transactions to check the
- * blake2b-256 content_hash (Substrate's native hash) against the stored bytes.
- *
- * Returns true if the bulletin chain confirms data matching the blake2b-256 of
- * the provided bytes is stored at that block, false otherwise.
- */
 export async function verifyMetadataOnBulletin(
 	blockNumber: number,
 	dataBytes: Uint8Array,
@@ -122,43 +108,89 @@ export async function verifyMetadataOnBulletin(
 	}
 }
 
-/**
- * Fetch metadata JSON from the Bulletin Chain block.
- * Retrieves the raw block extrinsics, scans each one looking for JSON bytes
- * whose keccak256 matches the expectedMetadataHash stored on-chain.
- *
- * Returns parsed IssuerMetadata on success, null if not found or data expired.
- */
-export async function fetchMetadataFromBulletin(
-	blockNumber: number,
+// Fetch metadata via the Paseo IPFS gateway using a CIDv1 derived from the
+// blake2b-256 content hash. Data stored via TransactionStorage.store() is
+// pinned by the Bulletin Chain node — no archive RPC node required.
+async function fetchMetadataFromIpfsGateway(
+	cid: string,
 	expectedMetadataHash: `0x${string}`,
 ): Promise<IssuerMetadata | null> {
 	try {
-		const api = getBulletinApi();
-		const client = getBulletinClient();
+		const response = await fetch(ipfsUrl(cid));
+		if (!response.ok) return null;
+		const bytes = new Uint8Array(await response.arrayBuffer());
+		if (computeMetadataHash(bytes).toLowerCase() !== expectedMetadataHash.toLowerCase()) return null;
+		return JSON.parse(new TextDecoder().decode(bytes)) as IssuerMetadata;
+	} catch {
+		return null;
+	}
+}
 
-		// Get the block hash from block number via System.BlockHash storage
-		const blockHashBinary = await api.query.System.BlockHash.getValue(blockNumber);
-		if (!blockHashBinary) return null;
-		const blockHash = blockHashBinary.asHex();
+// Fetch raw extrinsics for a historical block via legacy chain_getBlock JSON-RPC.
+// Used only for legacy bulletinRef values that predate the CID format.
+function chainGetBlockExtrinsics(wsUrl: string, blockHash: string): Promise<string[]> {
+	return new Promise((resolve, reject) => {
+		const ws = new WebSocket(wsUrl);
+		let settled = false;
+		const timeout = setTimeout(() => {
+			if (!settled) { settled = true; ws.close(); reject(new Error("chain_getBlock timeout")); }
+		}, 20_000);
 
-		// Fetch the raw extrinsics for the block
-		const extrinsics = await client.getBlockBody(blockHash);
+		ws.onopen = () => {
+			ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "chain_getBlock", params: [blockHash] }));
+		};
+		ws.onmessage = (event) => {
+			if (settled) return;
+			try {
+				const msg = JSON.parse(event.data as string);
+				if (msg.id === 1) {
+					settled = true; clearTimeout(timeout); ws.close();
+					if (msg.error) reject(new Error(msg.error.message));
+					else resolve((msg.result?.block?.extrinsics as string[]) ?? []);
+				}
+			} catch (e) { settled = true; clearTimeout(timeout); ws.close(); reject(e); }
+		};
+		ws.onerror = () => {
+			if (!settled) { settled = true; clearTimeout(timeout); reject(new Error("WebSocket error")); }
+		};
+		ws.onclose = (ev) => {
+			if (!settled) { settled = true; clearTimeout(timeout); reject(new Error(`WS closed (code ${ev.code})`)); }
+		};
+	});
+}
+
+/**
+ * Fetch issuer metadata JSON from the Bulletin Chain.
+ *
+ * bulletinRef formats:
+ *   - CIDv1 string (current): fetched from the Paseo IPFS gateway, permanently available.
+ *   - "blockNumber:blockHash" (legacy): fetched via chain_getBlock; fails on pruning nodes.
+ *   - "blockNumber" (oldest): cannot fetch — block hash unavailable.
+ */
+export async function fetchMetadataFromBulletin(
+	bulletinRef: string,
+	expectedMetadataHash: `0x${string}`,
+): Promise<IssuerMetadata | null> {
+	if (!bulletinRef.includes(":")) {
+		return fetchMetadataFromIpfsGateway(bulletinRef, expectedMetadataHash);
+	}
+
+	const parts = bulletinRef.split(":");
+	if (parts.length < 2) return null;
+	const blockHash = parts.slice(1).join(":");
+
+	try {
+		const extrinsics = await chainGetBlockExtrinsics(BULLETIN_WS, blockHash);
 		if (!extrinsics || extrinsics.length === 0) return null;
 
-		// Scan each extrinsic trying to extract stored JSON bytes.
-		// Strategy: parse the raw SCALE hex, locate the first `{` byte and
-		// extract bytes from there to the matching `}`. Then verify the keccak256.
 		for (const extrinsicHex of extrinsics) {
 			const data = extractJsonBytesFromExtrinsic(extrinsicHex);
 			if (!data) continue;
 
-			const hash = computeMetadataHash(data);
-			if (hash.toLowerCase() !== expectedMetadataHash.toLowerCase()) continue;
+			if (computeMetadataHash(data).toLowerCase() !== expectedMetadataHash.toLowerCase()) continue;
 
 			try {
-				const text = new TextDecoder().decode(data);
-				return JSON.parse(text) as IssuerMetadata;
+				return JSON.parse(new TextDecoder().decode(data)) as IssuerMetadata;
 			} catch {
 				continue;
 			}
@@ -169,11 +201,9 @@ export async function fetchMetadataFromBulletin(
 	}
 }
 
-/**
- * Extract the stored data bytes from a raw SCALE-encoded TransactionStorage.store extrinsic.
- * Heuristic: locates the first `{` byte (0x7B) and extracts until the matching closing `}`.
- * This works reliably for our canonical JSON metadata format.
- */
+// Extract the stored JSON bytes from a raw SCALE-encoded TransactionStorage.store extrinsic.
+// Searches for the canonical metadata prefix `{"schemaVersion":"1"` rather than a bare `{`
+// to avoid false positives from random 0x7B bytes in the Sr25519 signature.
 function extractJsonBytesFromExtrinsic(extrinsicHex: string): Uint8Array | null {
 	try {
 		const hex = extrinsicHex.startsWith("0x") ? extrinsicHex.slice(2) : extrinsicHex;
@@ -182,26 +212,24 @@ function extractJsonBytesFromExtrinsic(extrinsicHex: string): Uint8Array | null 
 			bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
 		}
 
-		// Find opening `{`
-		let start = -1;
-		for (let i = 0; i < bytes.length; i++) {
-			if (bytes[i] === 0x7b) { start = i; break; }
-		}
-		if (start === -1) return null;
+		const marker = new TextEncoder().encode('{"schemaVersion":"1"');
 
-		// Walk forward matching braces to find the closing `}`
-		let depth = 0;
-		let end = -1;
-		for (let i = start; i < bytes.length; i++) {
-			if (bytes[i] === 0x7b) depth++;
-			else if (bytes[i] === 0x7d) {
-				depth--;
-				if (depth === 0) { end = i; break; }
+		outer: for (let i = 0; i <= bytes.length - marker.length; i++) {
+			for (let j = 0; j < marker.length; j++) {
+				if (bytes[i + j] !== marker[j]) continue outer;
 			}
+			let depth = 0;
+			let end = -1;
+			for (let k = i; k < bytes.length; k++) {
+				if (bytes[k] === 0x7b) depth++;
+				else if (bytes[k] === 0x7d) {
+					depth--;
+					if (depth === 0) { end = k; break; }
+				}
+			}
+			if (end !== -1) return bytes.slice(i, end + 1);
 		}
-		if (end === -1) return null;
-
-		return bytes.slice(start, end + 1);
+		return null;
 	} catch {
 		return null;
 	}
