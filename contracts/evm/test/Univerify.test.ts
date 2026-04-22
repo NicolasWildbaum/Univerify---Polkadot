@@ -1,4 +1,4 @@
-import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
+import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
 import { expect } from "chai";
 import hre from "hardhat";
 import type { Abi, Address, Hex, Log } from "viem";
@@ -175,6 +175,13 @@ const claimsHash2 = keccak256(toBytes("canonical-claims-json-2"));
 
 const GENESIS_NAMES = ["UDELAR", "University of Montevideo", "University ORT"] as const;
 const DEFAULT_THRESHOLD = 2;
+
+async function elapseGovernanceVotingPeriod(univerify: {
+	read: { GOVERNANCE_VOTING_PERIOD: () => Promise<bigint> };
+}) {
+	const period = Number(await univerify.read.GOVERNANCE_VOTING_PERIOD());
+	await time.increase(period + 1);
+}
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 //
@@ -541,9 +548,9 @@ describe("Univerify", function () {
 			await univerify.write.voteForRemoval([proposalId], { account: charlie.account });
 
 			const listLengthBefore = (await univerify.read.issuerCount()) as bigint;
-			const epochBefore = (await univerify.read.issuerEpoch([
-				alice.account.address,
-			])) as number | bigint;
+			const epochBefore = (await univerify.read.issuerEpoch([alice.account.address])) as
+				| number
+				| bigint;
 
 			const reapplyHash = await univerify.write.applyAsIssuer(
 				["UDELAR-reborn", metaUdelar, ""],
@@ -560,9 +567,9 @@ describe("Univerify", function () {
 			expect(profile.name).to.equal("UDELAR-reborn");
 
 			// Epoch must have advanced so prior approvals cannot leak in.
-			const epochAfter = (await univerify.read.issuerEpoch([
-				alice.account.address,
-			])) as number | bigint;
+			const epochAfter = (await univerify.read.issuerEpoch([alice.account.address])) as
+				| number
+				| bigint;
 			expect(Number(epochAfter)).to.equal(Number(epochBefore) + 1);
 
 			// Enumeration must not be duplicated — the same slot is reused.
@@ -667,9 +674,9 @@ describe("Univerify", function () {
 			await univerify.write.applyAsIssuer(["UDELAR-r2", metaUdelar, ""], {
 				account: alice.account,
 			});
-			const epoch = (await univerify.read.issuerEpoch([
-				alice.account.address,
-			])) as number | bigint;
+			const epoch = (await univerify.read.issuerEpoch([alice.account.address])) as
+				| number
+				| bigint;
 			expect(Number(epoch)).to.equal(2);
 
 			// New round is a clean slate: no approver has approved yet this round.
@@ -678,6 +685,78 @@ describe("Univerify", function () {
 					alice.account.address,
 					bob.account.address,
 				])) as boolean,
+			).to.equal(false);
+		});
+
+		it("expires an unresolved activation vote and restores a first-time applicant to None", async function () {
+			const { univerify, applicant, alice } = await loadFixture(deployWithGenesis);
+
+			await univerify.write.applyAsIssuer(["Applicant University", metaApplicant, ""], {
+				account: applicant.account,
+			});
+			await univerify.write.approveIssuer([applicant.account.address], {
+				account: alice.account,
+			});
+
+			await elapseGovernanceVotingPeriod(univerify);
+
+			const expired = readIssuerStruct(
+				(await univerify.read.getIssuer([applicant.account.address])) as unknown,
+			);
+			expect(expired.status).to.equal(STATUS_NONE);
+			expect(expired.approvalCount).to.equal(0);
+			expect(expired.name).to.equal("");
+			expect(
+				await univerify.read.hasApproved([
+					applicant.account.address,
+					alice.account.address,
+				]),
+			).to.equal(false);
+
+			const countBeforeReapply = (await univerify.read.issuerCount()) as bigint;
+			await univerify.write.applyAsIssuer(["Applicant Retry", metaApplicant, ""], {
+				account: applicant.account,
+			});
+			const countAfterReapply = (await univerify.read.issuerCount()) as bigint;
+			expect(countAfterReapply).to.equal(countBeforeReapply);
+		});
+
+		it("expires an unresolved re-application and restores the full previous Removed profile", async function () {
+			const { univerify, alice, bob, charlie } = await loadFixture(deployWithGenesis);
+
+			await univerify.write.proposeRemoval([alice.account.address], {
+				account: bob.account,
+			});
+			const removalId = (await univerify.read.openRemovalProposal([
+				alice.account.address,
+			])) as bigint;
+			await univerify.write.voteForRemoval([removalId], { account: charlie.account });
+
+			const removedBefore = readIssuerStruct(
+				(await univerify.read.getIssuer([alice.account.address])) as unknown,
+			);
+			expect(removedBefore.status).to.equal(STATUS_REMOVED);
+
+			await univerify.write.applyAsIssuer(["UDELAR-temp", metaApplicant, "cid-temp"], {
+				account: alice.account,
+			});
+			await univerify.write.approveIssuer([alice.account.address], {
+				account: bob.account,
+			});
+
+			await elapseGovernanceVotingPeriod(univerify);
+
+			const restored = readIssuerStruct(
+				(await univerify.read.getIssuer([alice.account.address])) as unknown,
+			);
+			expect(restored.status).to.equal(STATUS_REMOVED);
+			expect(restored.name).to.equal(removedBefore.name);
+			expect(restored.metadataHash).to.equal(removedBefore.metadataHash);
+			expect(restored.bulletinRef).to.equal(removedBefore.bulletinRef);
+			expect(restored.approvalCount).to.equal(removedBefore.approvalCount);
+			expect(restored.registeredAt).to.equal(removedBefore.registeredAt);
+			expect(
+				await univerify.read.hasApproved([alice.account.address, bob.account.address]),
 			).to.equal(false);
 		});
 
@@ -956,9 +1035,7 @@ describe("Univerify", function () {
 			);
 			expect(voteLogs).to.have.lengthOf(1);
 			expect(voteLogs[0].args.proposalId).to.equal(proposalId);
-			expect(getAddress(voteLogs[0].args.voter)).to.equal(
-				getAddress(alice.account.address),
-			);
+			expect(getAddress(voteLogs[0].args.voter)).to.equal(getAddress(alice.account.address));
 			expect(Number(voteLogs[0].args.voteCount)).to.equal(1);
 		});
 
@@ -974,9 +1051,7 @@ describe("Univerify", function () {
 		});
 
 		it("reverts NotActiveIssuer when a Pending applicant proposes removal", async function () {
-			const { univerify, applicant, alice } = await loadFixture(
-				deployWithPendingApplicant,
-			);
+			const { univerify, applicant, alice } = await loadFixture(deployWithPendingApplicant);
 			await expectRevert(
 				() =>
 					univerify.write.proposeRemoval([alice.account.address], {
@@ -1009,9 +1084,7 @@ describe("Univerify", function () {
 		});
 
 		it("reverts IssuerNotActive when target is Pending", async function () {
-			const { univerify, alice, applicant } = await loadFixture(
-				deployWithPendingApplicant,
-			);
+			const { univerify, alice, applicant } = await loadFixture(deployWithPendingApplicant);
 			await expectRevert(
 				() =>
 					univerify.write.proposeRemoval([applicant.account.address], {
@@ -1033,6 +1106,46 @@ describe("Univerify", function () {
 					}),
 				"RemovalProposalAlreadyOpen",
 			);
+		});
+
+		it("expires an unresolved removal proposal, removes it from open reads, and restores the target to Active", async function () {
+			const { univerify, alice, bob, charlie } = await loadFixture(deployWithGenesis);
+
+			await univerify.write.proposeRemoval([bob.account.address], {
+				account: alice.account,
+			});
+			const proposalId = (await univerify.read.openRemovalProposal([
+				bob.account.address,
+			])) as bigint;
+
+			await elapseGovernanceVotingPeriod(univerify);
+
+			const proposal = readRemovalProposal(
+				(await univerify.read.getRemovalProposal([proposalId])) as unknown,
+			);
+			expect(getAddress(proposal.target)).to.equal(getAddress(ZERO_ADDRESS));
+			expect(
+				(await univerify.read.openRemovalProposal([bob.account.address])) as bigint,
+			).to.equal(0n);
+			expect(
+				await univerify.read.hasVotedOnRemoval([proposalId, alice.account.address]),
+			).to.equal(false);
+
+			const bobProfile = readIssuerStruct(
+				(await univerify.read.getIssuer([bob.account.address])) as unknown,
+			);
+			expect(bobProfile.status).to.equal(STATUS_ACTIVE);
+			expect(await univerify.read.isActiveIssuer([bob.account.address])).to.equal(true);
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(3);
+
+			// Write-path lazy expiry: the stale proposal should not block a
+			// fresh proposal for the same target once the next action arrives.
+			await univerify.write.proposeRemoval([bob.account.address], {
+				account: charlie.account,
+			});
+			expect(
+				(await univerify.read.openRemovalProposal([bob.account.address])) as bigint,
+			).to.equal(2n);
 		});
 
 		it("executes immediately when threshold is 1 (single-genesis federation)", async function () {
@@ -1076,9 +1189,9 @@ describe("Univerify", function () {
 			// Proposal slot is cleared so a future target can reuse it (not
 			// that `bob` can be re-proposed — they're no longer Active — but
 			// the invariant is what the frontend relies on).
-			expect(
-				(await u.read.openRemovalProposal([bob.account.address])) as bigint,
-			).to.equal(0n);
+			expect((await u.read.openRemovalProposal([bob.account.address])) as bigint).to.equal(
+				0n,
+			);
 		});
 	});
 
@@ -1256,9 +1369,7 @@ describe("Univerify", function () {
 				account: alice.account,
 			});
 			await univerify.write.voteForRemoval([1n], { account: charlie.account });
-			expect(Number(await univerify.read.activeIssuerCount())).to.equal(
-				genesis.length - 1,
-			);
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(genesis.length - 1);
 
 			// Now only alice + charlie are active. threshold is 2. They can
 			// still remove each other by unanimity — alice proposes charlie,
@@ -1356,8 +1467,7 @@ describe("Univerify", function () {
 		});
 
 		it("reverts NotActiveIssuer when caller is Pending", async function () {
-			const { univerify, applicant, student } =
-				await loadFixture(deployWithPendingApplicant);
+			const { univerify, applicant, student } = await loadFixture(deployWithPendingApplicant);
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
@@ -1429,10 +1539,9 @@ describe("Univerify", function () {
 			const { univerify, alice } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
-					univerify.write.issueCertificate(
-						[certificateId, claimsHash, ZERO_ADDRESS],
-						{ account: alice.account },
-					),
+					univerify.write.issueCertificate([certificateId, claimsHash, ZERO_ADDRESS], {
+						account: alice.account,
+					}),
 				"InvalidStudentAddress",
 			);
 		});
@@ -1444,16 +1553,14 @@ describe("Univerify", function () {
 				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
 			);
-			const tokenId = (await certificateNft.read.certIdToTokenId([
-				certificateId,
-			])) as bigint;
+			const tokenId = (await certificateNft.read.certIdToTokenId([certificateId])) as bigint;
 			expect(tokenId).to.equal(1n);
-			expect(
-				getAddress((await certificateNft.read.ownerOf([tokenId])) as Address),
-			).to.equal(getAddress(student.account.address));
-			expect((await certificateNft.read.balanceOf([student.account.address])) as bigint).to.equal(
-				1n,
+			expect(getAddress((await certificateNft.read.ownerOf([tokenId])) as Address)).to.equal(
+				getAddress(student.account.address),
 			);
+			expect(
+				(await certificateNft.read.balanceOf([student.account.address])) as bigint,
+			).to.equal(1n);
 			expect((await certificateNft.read.tokenIdToCertId([tokenId])) as Hex).to.equal(
 				certificateId,
 			);
@@ -1467,7 +1574,11 @@ describe("Univerify", function () {
 			// Deploy a fresh Univerify without wiring a CertificateNft.
 			const [, alice, , , , , student] = await hre.viem.getWalletClients();
 			const genesis = [
-				{ account: alice.account.address, name: GENESIS_NAMES[0], metadataHash: metaUdelar },
+				{
+					account: alice.account.address,
+					name: GENESIS_NAMES[0],
+					metadataHash: metaUdelar,
+				},
 			];
 			const univerify = await hre.viem.deployContract("Univerify", [genesis, 1]);
 			await expectRevert(
@@ -1664,10 +1775,9 @@ describe("Univerify", function () {
 				{ account: alice.account },
 			);
 
-			const txHash = await univerify.write.setCertificatePdfCid(
-				[certificateId, pdfCid],
-				{ account: student.account },
-			);
+			const txHash = await univerify.write.setCertificatePdfCid([certificateId, pdfCid], {
+				account: student.account,
+			});
 
 			expect(await univerify.read.certificatePdfCids([certificateId])).to.equal(pdfCid);
 
@@ -1740,8 +1850,7 @@ describe("Univerify", function () {
 		});
 
 		it("reverts NotCertificateHolder when a non-holder tries to attach a CID", async function () {
-			const { univerify, alice, student, stranger } =
-				await loadFixture(deployWithGenesis);
+			const { univerify, alice, student, stranger } = await loadFixture(deployWithGenesis);
 			await univerify.write.issueCertificate(
 				[certificateId, claimsHash, student.account.address],
 				{ account: alice.account },
@@ -2070,12 +2179,12 @@ describe("Univerify", function () {
 			expect(() =>
 				computeClaimsHash({ ...sampleClaims, issuanceDate: "March 2026" }),
 			).to.throw(/Invalid issuanceDate/);
-			expect(() =>
-				computeClaimsHash({ ...sampleClaims, issuanceDate: "2026-13" }),
-			).to.throw(/Invalid issuanceDate/);
-			expect(() =>
-				computeClaimsHash({ ...sampleClaims, issuanceDate: "2026/03" }),
-			).to.throw(/Invalid issuanceDate/);
+			expect(() => computeClaimsHash({ ...sampleClaims, issuanceDate: "2026-13" })).to.throw(
+				/Invalid issuanceDate/,
+			);
+			expect(() => computeClaimsHash({ ...sampleClaims, issuanceDate: "2026/03" })).to.throw(
+				/Invalid issuanceDate/,
+			);
 		});
 
 		it("produces different hashes for different issuance months", function () {
