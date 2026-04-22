@@ -5,13 +5,10 @@
 // account + its derived EVM address to the rest of the app via `useWalletStore`.
 
 import { useEffect, useRef, useState } from "react";
-import {
-	useWalletStore,
-	ss58ToEvmAddress,
-	type WalletStatus,
-} from "./wallet";
+import { useWalletStore, ss58ToEvmAddress, type WalletStatus } from "./wallet";
 import { useChainStore } from "../store/chainStore";
 import { isLocalChain, requestDevFunds } from "./faucet";
+import { getRuntimeContextSnapshot, logDiagnostic, setDiagnosticState } from "../utils/diagnostics";
 
 const WALLET_LABELS: Record<string, string> = {
 	"polkadot-js": "Polkadot.js",
@@ -50,6 +47,9 @@ export default function WalletConnectButton() {
 		// Some extensions inject a tick or two after the page loads, so re-check.
 		const t = setTimeout(refreshExtensions, 750);
 		void restore();
+		logDiagnostic("wallet-ui", "widget_mounted", {
+			runtime: getRuntimeContextSnapshot(),
+		});
 		return () => clearTimeout(t);
 	}, [refreshExtensions, restore]);
 
@@ -70,7 +70,26 @@ export default function WalletConnectButton() {
 			<button
 				onClick={() => {
 					refreshExtensions();
-					setOpen((o) => !o);
+					const nextOpen = !open;
+					if (nextOpen) {
+						setDiagnosticState("wallet.ui", {
+							modalOpen: true,
+							status: status.kind,
+							availableExtensions,
+							runtime: getRuntimeContextSnapshot(),
+						});
+						logDiagnostic(
+							"wallet-ui",
+							"modal_opened",
+							{
+								status: status.kind,
+								availableExtensions,
+								runtime: getRuntimeContextSnapshot(),
+							},
+							isInCrossOriginIframe() ? "warn" : "info",
+						);
+					}
+					setOpen(nextOpen);
 				}}
 				className="btn-primary text-xs whitespace-nowrap min-w-[180px]"
 				title="Connect a Polkadot wallet"
@@ -106,6 +125,10 @@ export default function WalletConnectButton() {
 							status={status}
 							extensions={availableExtensions}
 							onConnect={async (name) => {
+								logDiagnostic("wallet-ui", "extension_connect_clicked", {
+									extensionName: name,
+									runtime: getRuntimeContextSnapshot(),
+								});
 								await connect(name);
 								setOpen(false);
 							}}
@@ -144,10 +167,7 @@ function ConnectedPanel({
 				<span className="text-xs uppercase tracking-wider text-text-tertiary">
 					{labelFor(status.extensionName)}
 				</span>
-				<button
-					onClick={onDisconnect}
-					className="btn-secondary text-[11px] px-3 py-1.5"
-				>
+				<button onClick={onDisconnect} className="btn-secondary text-[11px] px-3 py-1.5">
 					Disconnect
 				</button>
 			</div>
@@ -228,13 +248,13 @@ function DevFaucet({ address }: { address: string }) {
 	}
 
 	return (
-			<div className="pt-2 border-t border-white/[0.06] space-y-1.5">
-				<button
-					onClick={onClick}
-					disabled={state.kind === "sending"}
-					className="w-full btn-secondary text-xs justify-center disabled:opacity-50"
-					title="Send a small transfer from //Alice so this account can pay for fees on the local chain"
-				>
+		<div className="pt-2 border-t border-white/[0.06] space-y-1.5">
+			<button
+				onClick={onClick}
+				disabled={state.kind === "sending"}
+				className="w-full btn-secondary text-xs justify-center disabled:opacity-50"
+				title="Send a small transfer from //Alice so this account can pay for fees on the local chain"
+			>
 				{state.kind === "sending" ? "Sending…" : "Request dev funds (local)"}
 			</button>
 			{state.kind === "success" && (
@@ -249,6 +269,15 @@ function DevFaucet({ address }: { address: string }) {
 	);
 }
 
+function isInCrossOriginIframe(): boolean {
+	try {
+		return window !== window.top;
+	} catch {
+		// Accessing window.top throws in cross-origin iframes.
+		return true;
+	}
+}
+
 function DiscoverPanel({
 	status,
 	extensions,
@@ -258,11 +287,26 @@ function DiscoverPanel({
 	extensions: string[];
 	onConnect: (extensionName: string) => void | Promise<void>;
 }) {
+	const inIframe = isInCrossOriginIframe();
+
+	useEffect(() => {
+		if (!inIframe) return;
+		logDiagnostic(
+			"wallet-ui",
+			"cross_origin_iframe_detected",
+			{
+				extensions,
+				runtime: getRuntimeContextSnapshot(),
+			},
+			"warn",
+		);
+	}, [extensions, inIframe]);
+
 	return (
 		<div className="space-y-3">
 			<p className="text-xs text-text-tertiary">
-				Connect a Polkadot-compatible browser wallet. Any wallet implementing the
-				standard injected interface works (Polkadot.js, Talisman, SubWallet,{" "}
+				Connect a Polkadot-compatible browser wallet. Any wallet implementing the standard
+				injected interface works (Polkadot.js, Talisman, SubWallet,{" "}
 				<a
 					href="https://app.dotsamalabs.com/#/"
 					target="_blank"
@@ -274,28 +318,35 @@ function DiscoverPanel({
 				, …).
 			</p>
 
-			{extensions.length === 0 ? (
+			{inIframe && (
 				<p className="text-xs text-accent-orange">
-					No wallet detected. Install an extension and refresh.
+					This app is running inside an embedded frame. Browser wallet extensions cannot
+					inject into cross-origin frames — open the app directly in a top-level browser
+					tab to connect your wallet.
 				</p>
-			) : (
-				<div className="flex flex-col gap-1.5">
-					{extensions.map((name) => (
-						<button
-							key={name}
-							onClick={() => onConnect(name)}
-							disabled={status.kind === "connecting"}
-							className="btn-secondary text-xs justify-start px-4"
-						>
-							{labelFor(name)}
-						</button>
-					))}
-				</div>
 			)}
 
-			{status.kind === "error" && (
-				<p className="text-xs text-accent-red">{status.message}</p>
-			)}
+			{!inIframe &&
+				(extensions.length === 0 ? (
+					<p className="text-xs text-accent-orange">
+						No wallet detected. Install an extension and refresh.
+					</p>
+				) : (
+					<div className="flex flex-col gap-1.5">
+						{extensions.map((name) => (
+							<button
+								key={name}
+								onClick={() => onConnect(name)}
+								disabled={status.kind === "connecting"}
+								className="btn-secondary text-xs justify-start px-4"
+							>
+								{labelFor(name)}
+							</button>
+						))}
+					</div>
+				))}
+
+			{status.kind === "error" && <p className="text-xs text-accent-red">{status.message}</p>}
 		</div>
 	);
 }

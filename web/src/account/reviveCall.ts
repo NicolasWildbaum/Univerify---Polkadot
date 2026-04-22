@@ -21,6 +21,7 @@
 import { encodeFunctionData, type Abi, type Address, type Hex } from "viem";
 import { Binary, FixedSizeBinary, type PolkadotClient, type PolkadotSigner } from "polkadot-api";
 import { getClient } from "../hooks/useChain";
+import { logDiagnostic, serializeError, setDiagnosticState } from "../utils/diagnostics";
 
 // `${wsUrl}::${evmAddress.toLowerCase()}` — set after a confirmed mapping.
 // Avoids a WS round-trip per-tx once we know the account is mapped.
@@ -86,6 +87,20 @@ export async function submitReviveCall({
 		functionName,
 		args: args as never,
 	}) as Hex;
+	const callContext = {
+		wsUrl,
+		contractAddress,
+		functionName,
+		signerEvmAddress,
+		value,
+		args,
+		dataSizeBytes: Math.max(0, (data.length - 2) / 2),
+	};
+	logDiagnostic("revive", "submit_requested", callContext);
+	setDiagnosticState("revive.lastCall", {
+		phase: "preparing",
+		...callContext,
+	});
 
 	const client: PolkadotClient = getClient(wsUrl);
 	// `getUnsafeApi` is deliberately un-typed: `Revive` isn't generated into
@@ -100,6 +115,17 @@ export async function submitReviveCall({
 	// suffix `0xee…ee`) are implicitly mapped; everything else must call
 	// `map_account` once. We check a session cache first, then storage.
 	await ensureMapped(api, signer, signerEvmAddress, wsUrl);
+	logDiagnostic(
+		"revive",
+		"mapping_ready",
+		{
+			wsUrl,
+			signerEvmAddress,
+			contractAddress,
+			functionName,
+		},
+		"debug",
+	);
 
 	const tx = api.tx.Revive.call({
 		dest: FixedSizeBinary.fromHex(contractAddress),
@@ -112,37 +138,109 @@ export async function submitReviveCall({
 		data: Binary.fromHex(data),
 	});
 
-	return signSubmitBestBlock(tx, signer, onBroadcast);
+	return signSubmitBestBlock(tx, signer, onBroadcast, callContext);
 }
 
 // Resolves on best-block inclusion (~6-12s on Paseo) instead of waiting for
 // GRANDPA finality (~30-60s). Calls `onBroadcast` once the tx hash is known.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function signSubmitBestBlock(tx: any, signer: PolkadotSigner, onBroadcast?: (txHash: Hex) => void): Promise<SubmitResult> {
+function signSubmitBestBlock(
+	tx: any,
+	signer: PolkadotSigner,
+	onBroadcast?: (txHash: Hex) => void,
+	context?: Record<string, unknown>,
+): Promise<SubmitResult> {
 	return new Promise((resolve, reject) => {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const sub = tx.signSubmitAndWatch(signer).subscribe({
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			next(event: any) {
 				if (event.type === "broadcasted") {
+					logDiagnostic("revive", "tx_broadcasted", {
+						...context,
+						txHash: event.txHash as Hex,
+					});
+					setDiagnosticState("revive.lastCall", {
+						phase: "broadcasted",
+						...context,
+						txHash: event.txHash as Hex,
+					});
 					onBroadcast?.(event.txHash as Hex);
 				} else if (event.type === "txBestBlocksState") {
 					if (!event.found) {
 						if (event.isValid === false) {
 							sub.unsubscribe();
+							logDiagnostic(
+								"revive",
+								"tx_rejected_from_pool",
+								{
+									...context,
+									event,
+								},
+								"error",
+							);
+							setDiagnosticState("revive.lastCall", {
+								phase: "rejected",
+								...context,
+								event,
+							});
 							reject(new Error("Transaction was rejected from the pool."));
 						}
 						return;
 					}
 					sub.unsubscribe();
 					if (!event.ok) {
-						reject(new ReviveDispatchError(event.dispatchError));
+						const error = new ReviveDispatchError(event.dispatchError);
+						logDiagnostic(
+							"revive",
+							"tx_dispatch_error",
+							{
+								...context,
+								dispatchError: event.dispatchError,
+								message: error.message,
+							},
+							"error",
+						);
+						setDiagnosticState("revive.lastCall", {
+							phase: "error",
+							...context,
+							dispatchError: event.dispatchError,
+							message: error.message,
+						});
+						reject(error);
 					} else {
+						logDiagnostic("revive", "tx_included", {
+							...context,
+							txHash: event.txHash as Hex,
+							block: event.block,
+						});
+						setDiagnosticState("revive.lastCall", {
+							phase: "included",
+							...context,
+							txHash: event.txHash as Hex,
+							block: event.block,
+						});
 						resolve({ txHash: event.txHash as Hex, block: event.block });
 					}
 				}
 			},
-			error: reject,
+			error(error: unknown) {
+				logDiagnostic(
+					"revive",
+					"sign_submit_watch_failed",
+					{
+						...context,
+						error: serializeError(error),
+					},
+					"error",
+				);
+				setDiagnosticState("revive.lastCall", {
+					phase: "error",
+					...context,
+					error: serializeError(error),
+				});
+				reject(error);
+			},
 		});
 	});
 }
@@ -159,19 +257,51 @@ async function ensureMapped(
 	wsUrl: string,
 ): Promise<void> {
 	const cacheKey = `${wsUrl}::${signerEvmAddress.toLowerCase()}`;
-	if (mappedAccounts.has(cacheKey)) return;
+	if (mappedAccounts.has(cacheKey)) {
+		logDiagnostic(
+			"revive",
+			"mapping_cache_hit",
+			{
+				wsUrl,
+				signerEvmAddress,
+			},
+			"debug",
+		);
+		return;
+	}
 
 	const existing = await api.query.Revive.OriginalAccount.getValue(
 		FixedSizeBinary.fromHex(signerEvmAddress),
 	);
 	if (existing !== undefined) {
 		mappedAccounts.add(cacheKey);
+		logDiagnostic(
+			"revive",
+			"mapping_found_on_chain",
+			{
+				wsUrl,
+				signerEvmAddress,
+			},
+			"debug",
+		);
 		return;
 	}
 
+	logDiagnostic("revive", "mapping_missing_submit_map_account", {
+		wsUrl,
+		signerEvmAddress,
+	});
 	const mapTx = api.tx.Revive.map_account();
-	await signSubmitBestBlock(mapTx, signer);
+	await signSubmitBestBlock(mapTx, signer, undefined, {
+		wsUrl,
+		signerEvmAddress,
+		functionName: "map_account",
+	});
 	mappedAccounts.add(cacheKey);
+	logDiagnostic("revive", "mapping_completed", {
+		wsUrl,
+		signerEvmAddress,
+	});
 }
 
 export class ReviveDispatchError extends Error {

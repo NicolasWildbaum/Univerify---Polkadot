@@ -27,13 +27,17 @@ import {
 	type CredentialClaims,
 	type VerifiableCredential,
 } from "../utils/credential";
-import {
-	buildCertificatePdfBytes,
-	downloadPdfBytes,
-} from "../utils/certificatePdf";
+import { buildCertificatePdfBytes, downloadPdfBytes } from "../utils/certificatePdf";
+import { buildAppHashUrl } from "../utils/appUrl";
 import { storeGeneratedCertificatePdf } from "../utils/certificatePdfStore";
 import { extractRevertName } from "../utils/contractErrors";
 import { MonthYearPicker } from "../components/MonthYearPicker";
+import {
+	getRuntimeContextSnapshot,
+	logDiagnostic,
+	serializeError,
+	setDiagnosticState,
+} from "../utils/diagnostics";
 
 const STORAGE_KEY_PREFIX = "univerify:address";
 
@@ -92,7 +96,7 @@ function contractRevertedFallback(e: unknown): string {
 }
 
 function buildPublicVerifyUrl(certificateId: Hex): string {
-	return `${window.location.origin}/#/verify/cert/${certificateId}`;
+	return buildAppHashUrl(`/verify/cert/${certificateId}`);
 }
 
 // ── Component ───────────────────────────────────────────────────────
@@ -136,11 +140,12 @@ export default function UniverifyIssuerPage() {
 	// async on-chain issuer lookup. The sync case is derived at render time so
 	// it never triggers cascading renders; the async case lives in state.
 	const [onChainStatus, setOnChainStatus] = useState<AuthStatus>("unknown");
-	const authStatus: AuthStatus = !isWalletConnected || !issuerAddress
-		? "no-wallet"
-		: !contractAddress
-			? "no-contract"
-			: onChainStatus;
+	const authStatus: AuthStatus =
+		!isWalletConnected || !issuerAddress
+			? "no-wallet"
+			: !contractAddress
+				? "no-contract"
+				: onChainStatus;
 
 	function saveAddress(address: string) {
 		setContractAddress(address);
@@ -165,12 +170,34 @@ export default function UniverifyIssuerPage() {
 		let cancelled = false;
 		(async () => {
 			try {
+				logDiagnostic("issuer-auth", "check_started", {
+					ethRpcUrl,
+					contractAddress,
+					issuerAddress,
+				});
 				const client = getPublicClient(ethRpcUrl);
 				const addr = contractAddress as Address;
 				const code = await client.getCode({ address: addr });
 				if (cancelled) return;
 				if (!code || code === "0x") {
 					setOnChainStatus("unknown");
+					setDiagnosticState("issuer.auth", {
+						status: "unknown",
+						reason: "no_code",
+						ethRpcUrl,
+						contractAddress,
+						issuerAddress,
+					});
+					logDiagnostic(
+						"issuer-auth",
+						"contract_code_missing",
+						{
+							ethRpcUrl,
+							contractAddress,
+							issuerAddress,
+						},
+						"warn",
+					);
 					return;
 				}
 				const issuer = (await client.readContract({
@@ -180,22 +207,54 @@ export default function UniverifyIssuerPage() {
 					args: [issuerAddress],
 				})) as { status: number };
 				if (cancelled) return;
+				let nextStatus: AuthStatus;
 				switch (Number(issuer.status)) {
 					case 2:
-						setOnChainStatus("active");
+						nextStatus = "active";
 						break;
 					case 1:
-						setOnChainStatus("pending");
+						nextStatus = "pending";
 						break;
 					case 3:
-						setOnChainStatus("removed");
+						nextStatus = "removed";
 						break;
 					default:
-						setOnChainStatus("not-registered");
+						nextStatus = "not-registered";
 				}
-			} catch {
+				setOnChainStatus(nextStatus);
+				setDiagnosticState("issuer.auth", {
+					status: nextStatus,
+					ethRpcUrl,
+					contractAddress,
+					issuerAddress,
+				});
+				logDiagnostic("issuer-auth", "check_completed", {
+					status: nextStatus,
+					ethRpcUrl,
+					contractAddress,
+					issuerAddress,
+				});
+			} catch (error) {
 				if (cancelled) return;
 				setOnChainStatus("unknown");
+				setDiagnosticState("issuer.auth", {
+					status: "unknown",
+					ethRpcUrl,
+					contractAddress,
+					issuerAddress,
+					error: serializeError(error),
+				});
+				logDiagnostic(
+					"issuer-auth",
+					"check_failed",
+					{
+						ethRpcUrl,
+						contractAddress,
+						issuerAddress,
+						error: serializeError(error),
+					},
+					"error",
+				);
 			}
 		})();
 		return () => {
@@ -223,8 +282,7 @@ export default function UniverifyIssuerPage() {
 		return ss58ToEvmAddress(trimmedStudent);
 	})();
 	const studentAddressValid = resolvedStudent !== null;
-	const studentInputLooksLikeSs58 =
-		trimmedStudent.length > 0 && !trimmedStudent.startsWith("0x");
+	const studentInputLooksLikeSs58 = trimmedStudent.length > 0 && !trimmedStudent.startsWith("0x");
 
 	// `buildCredential` runs `normalizeClaims` internally, which throws on an
 	// invalid `issuanceDate`. `MonthYearPicker` can emit partial sentinels
@@ -258,7 +316,11 @@ export default function UniverifyIssuerPage() {
 		}
 	}, [claims, internalRef, issuerAddress]);
 
-	const busy = tx.kind === "sending" || tx.kind === "submitted" || revokeTx.kind === "sending" || revokeTx.kind === "submitted";
+	const busy =
+		tx.kind === "sending" ||
+		tx.kind === "submitted" ||
+		revokeTx.kind === "sending" ||
+		revokeTx.kind === "submitted";
 	const canSubmit =
 		isAuthorized &&
 		contractAddress.length > 0 &&
@@ -285,11 +347,43 @@ export default function UniverifyIssuerPage() {
 		}
 		const student = resolvedStudent;
 		setTx({ kind: "sending" });
+		setDiagnosticState("issuer.lastIssueAttempt", {
+			phase: "sending",
+			ethRpcUrl,
+			wsUrl,
+			contractAddress,
+			issuerAddress,
+			studentInput: trimmedStudent,
+			studentAddress: student,
+			certificateId: preview.certificateId,
+			claimsHash: preview.claimsHash,
+			runtime: getRuntimeContextSnapshot(),
+		});
+		logDiagnostic("issuer-issue", "requested", {
+			ethRpcUrl,
+			wsUrl,
+			contractAddress,
+			issuerAddress,
+			studentInput: trimmedStudent,
+			studentAddress: student,
+			certificateId: preview.certificateId,
+			claimsHash: preview.claimsHash,
+		});
 		try {
 			const publicClient = getPublicClient(ethRpcUrl);
 			const addr = contractAddress as Address;
 			const code = await publicClient.getCode({ address: addr });
 			if (!code || code === "0x") {
+				logDiagnostic(
+					"issuer-issue",
+					"contract_code_missing",
+					{
+						ethRpcUrl,
+						contractAddress: addr,
+						issuerAddress,
+					},
+					"error",
+				);
 				setTx({
 					kind: "error",
 					message: `No Univerify contract found at this address on ${ethRpcUrl}. Deploy one first or update the address.`,
@@ -310,13 +404,29 @@ export default function UniverifyIssuerPage() {
 					functionName: "issueCertificate",
 					args: [preview.certificateId, preview.claimsHash, student],
 				});
+				logDiagnostic(
+					"issuer-issue",
+					"preflight_ok",
+					{
+						contractAddress: addr,
+						issuerAddress,
+						studentAddress: student,
+						certificateId: preview.certificateId,
+					},
+					"debug",
+				);
 			} catch (simErr) {
-				console.warn("[Univerify] issueCertificate pre-flight reverted", {
-					issuerAddress,
-					student,
-					certificateId: preview.certificateId,
-					error: simErr,
-				});
+				logDiagnostic(
+					"issuer-issue",
+					"preflight_reverted",
+					{
+						issuerAddress,
+						student,
+						certificateId: preview.certificateId,
+						error: serializeError(simErr),
+					},
+					"warn",
+				);
 				throw simErr;
 			}
 
@@ -329,6 +439,22 @@ export default function UniverifyIssuerPage() {
 				functionName: "issueCertificate",
 				args: [preview.certificateId, preview.claimsHash, student],
 				onBroadcast: (hash) => setTx({ kind: "submitted", hash }),
+			});
+			logDiagnostic("issuer-issue", "tx_included", {
+				txHash: result.txHash,
+				block: result.block,
+				issuerAddress,
+				studentAddress: student,
+				certificateId: preview.certificateId,
+			});
+			setDiagnosticState("issuer.lastIssueAttempt", {
+				phase: "success",
+				txHash: result.txHash,
+				block: result.block,
+				issuerAddress,
+				studentAddress: student,
+				certificateId: preview.certificateId,
+				claimsHash: preview.claimsHash,
 			});
 
 			storeGeneratedCertificatePdf({
@@ -345,7 +471,34 @@ export default function UniverifyIssuerPage() {
 				studentAddress: student,
 			});
 		} catch (e) {
-			console.error("Issue failed:", e);
+			logDiagnostic(
+				"issuer-issue",
+				"failed",
+				{
+					ethRpcUrl,
+					wsUrl,
+					contractAddress,
+					issuerAddress,
+					studentInput: trimmedStudent,
+					studentAddress: student,
+					certificateId: preview.certificateId,
+					claimsHash: preview.claimsHash,
+					error: serializeError(e),
+				},
+				"error",
+			);
+			setDiagnosticState("issuer.lastIssueAttempt", {
+				phase: "error",
+				ethRpcUrl,
+				wsUrl,
+				contractAddress,
+				issuerAddress,
+				studentInput: trimmedStudent,
+				studentAddress: student,
+				certificateId: preview.certificateId,
+				claimsHash: preview.claimsHash,
+				error: serializeError(e),
+			});
 			const revert = extractRevertName(e);
 			const message =
 				revert === "NotActiveIssuer"
@@ -384,12 +537,40 @@ export default function UniverifyIssuerPage() {
 		const certificateId = deriveCertificateId(issuerAddress, ref);
 
 		setRevokeTx({ kind: "sending" });
+		setDiagnosticState("issuer.lastRevokeAttempt", {
+			phase: "sending",
+			ethRpcUrl,
+			wsUrl,
+			contractAddress,
+			issuerAddress,
+			internalRef: ref,
+			certificateId,
+			runtime: getRuntimeContextSnapshot(),
+		});
+		logDiagnostic("issuer-revoke", "requested", {
+			ethRpcUrl,
+			wsUrl,
+			contractAddress,
+			issuerAddress,
+			internalRef: ref,
+			certificateId,
+		});
 
 		try {
 			const publicClient = getPublicClient(ethRpcUrl);
 			const addr = contractAddress as Address;
 			const code = await publicClient.getCode({ address: addr });
 			if (!code || code === "0x") {
+				logDiagnostic(
+					"issuer-revoke",
+					"contract_code_missing",
+					{
+						ethRpcUrl,
+						contractAddress: addr,
+						issuerAddress,
+					},
+					"error",
+				);
 				setRevokeTx({
 					kind: "error",
 					message: `No Univerify contract found at this address on ${ethRpcUrl}.`,
@@ -406,6 +587,17 @@ export default function UniverifyIssuerPage() {
 				functionName: "revokeCertificate",
 				args: [certificateId],
 			});
+			logDiagnostic(
+				"issuer-revoke",
+				"preflight_ok",
+				{
+					contractAddress: addr,
+					issuerAddress,
+					internalRef: ref,
+					certificateId,
+				},
+				"debug",
+			);
 
 			const result = await submitReviveCall({
 				wsUrl,
@@ -417,6 +609,21 @@ export default function UniverifyIssuerPage() {
 				args: [certificateId],
 				onBroadcast: (hash) => setRevokeTx({ kind: "submitted", hash }),
 			});
+			logDiagnostic("issuer-revoke", "tx_included", {
+				txHash: result.txHash,
+				block: result.block,
+				issuerAddress,
+				internalRef: ref,
+				certificateId,
+			});
+			setDiagnosticState("issuer.lastRevokeAttempt", {
+				phase: "success",
+				txHash: result.txHash,
+				block: result.block,
+				issuerAddress,
+				internalRef: ref,
+				certificateId,
+			});
 
 			setRevokeTx({
 				kind: "success",
@@ -425,7 +632,30 @@ export default function UniverifyIssuerPage() {
 				internalRef: ref,
 			});
 		} catch (e) {
-			console.error("Revoke failed:", e);
+			logDiagnostic(
+				"issuer-revoke",
+				"failed",
+				{
+					ethRpcUrl,
+					wsUrl,
+					contractAddress,
+					issuerAddress,
+					internalRef: ref,
+					certificateId,
+					error: serializeError(e),
+				},
+				"error",
+			);
+			setDiagnosticState("issuer.lastRevokeAttempt", {
+				phase: "error",
+				ethRpcUrl,
+				wsUrl,
+				contractAddress,
+				issuerAddress,
+				internalRef: ref,
+				certificateId,
+				error: serializeError(e),
+			});
 			const revert = extractRevertName(e);
 			const message =
 				revert === "NotActiveIssuer"
@@ -464,10 +694,7 @@ export default function UniverifyIssuerPage() {
 		URL.revokeObjectURL(url);
 	}
 
-	function downloadCredentialPdf(
-		credential: VerifiableCredential,
-		student: Address,
-	) {
+	function downloadCredentialPdf(credential: VerifiableCredential, student: Address) {
 		const bytes = buildCertificatePdfBytes({
 			credential,
 			claimsHash: computeClaimsHash(credential.claims),
@@ -484,10 +711,10 @@ export default function UniverifyIssuerPage() {
 					<span className="page-kicker">Issuer Studio</span>
 					<h1 className="page-title text-polka-500">Issue Credential</h1>
 					<p className="page-subtitle">
-					Sign and register a new verifiable academic credential on the Univerify
-					contract. The resulting credential JSON is the artefact you give to the holder —
-					they present it to verifiers, who recompute the hash and check the on-chain
-					record.
+						Sign and register a new verifiable academic credential on the Univerify
+						contract. The resulting credential JSON is the artefact you give to the
+						holder — they present it to verifiers, who recompute the hash and check the
+						on-chain record.
 					</p>
 				</div>
 			</div>
@@ -538,10 +765,9 @@ export default function UniverifyIssuerPage() {
 					<div className="card space-y-4">
 						<h2 className="section-title">Credential Claims</h2>
 						<p className="text-text-secondary text-sm">
-							These fields are hashed deterministically into{" "}
-							<code>claimsHash</code>. Any change — even a single character —
-							produces a different hash and invalidates the credential at
-							verification time.
+							These fields are hashed deterministically into <code>claimsHash</code>.
+							Any change — even a single character — produces a different hash and
+							invalidates the credential at verification time.
 						</p>
 						<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 							<ClaimInput
@@ -618,9 +844,9 @@ export default function UniverifyIssuerPage() {
 								<p className="text-xs text-text-muted mt-1">
 									Accepts an EVM/H160 address or a Polkadot SS58 address — we
 									convert SS58 to its mapped H160 the same way{" "}
-									<code>pallet-revive</code> does. Issued in the same
-									transaction; soulbound, so the student wallet keeps the NFT
-									and cannot transfer it.
+									<code>pallet-revive</code> does. Issued in the same transaction;
+									soulbound, so the student wallet keeps the NFT and cannot
+									transfer it.
 								</p>
 								{trimmedStudent && !studentAddressValid ? (
 									<p className="text-xs text-accent-red mt-1">
@@ -639,7 +865,6 @@ export default function UniverifyIssuerPage() {
 									</p>
 								) : null}
 							</div>
-
 						</div>
 					</div>
 
@@ -669,7 +894,11 @@ export default function UniverifyIssuerPage() {
 								disabled={!canSubmit}
 								className="btn-primary"
 							>
-								{tx.kind === "sending" ? "Signing..." : tx.kind === "submitted" ? "Confirming..." : "Issue Certificate"}
+								{tx.kind === "sending"
+									? "Signing..."
+									: tx.kind === "submitted"
+										? "Confirming..."
+										: "Issue Certificate"}
 							</button>
 							{tx.kind === "submitted" && (
 								<p className="text-xs text-text-tertiary font-mono break-all">
@@ -692,14 +921,14 @@ export default function UniverifyIssuerPage() {
 								<h2 className="section-title mt-2 text-accent-green">
 									Certificate issued
 								</h2>
-									<p className="text-sm text-text-secondary mt-1">
-										The soulbound NFT has been minted to{" "}
-										<code className="font-mono text-xs">{tx.studentAddress}</code>
-										. A machine-readable PDF has also been generated automatically
-										and cached in this browser, so it is ready inside{" "}
-										<strong>My Certificates</strong> for viewing, downloading, or
-										optional Bulletin upload.
-									</p>
+								<p className="text-sm text-text-secondary mt-1">
+									The soulbound NFT has been minted to{" "}
+									<code className="font-mono text-xs">{tx.studentAddress}</code>.
+									A machine-readable PDF has also been generated automatically and
+									cached in this browser, so it is ready inside{" "}
+									<strong>My Certificates</strong> for viewing, downloading, or
+									optional Bulletin upload.
+								</p>
 								<p className="text-xs text-text-tertiary font-mono break-all mt-2">
 									tx: {tx.hash}
 								</p>
@@ -728,7 +957,8 @@ export default function UniverifyIssuerPage() {
 												downloadCredentialPdf(
 													tx.credential,
 													tx.studentAddress,
-												)}
+												)
+											}
 											className="btn-secondary text-xs"
 										>
 											Download .pdf
@@ -753,10 +983,10 @@ export default function UniverifyIssuerPage() {
 						<h2 className="section-title text-accent-orange">Revoke Certificate</h2>
 						<p className="text-text-secondary text-sm">
 							Enter the <code>Internal Reference</code> you used when issuing (e.g.{" "}
-							<code>DIPLOMA-0001</code>). The <code>certificateId</code> is
-							re-derived from the connected wallet's EVM address, so you do not need
-							to remember the 32-byte id. Only the account that originally issued the
-							certificate can revoke it.
+							<code>DIPLOMA-0001</code>). The <code>certificateId</code> is re-derived
+							from the connected wallet's EVM address, so you do not need to remember
+							the 32-byte id. Only the account that originally issued the certificate
+							can revoke it.
 						</p>
 
 						<div>
@@ -766,10 +996,7 @@ export default function UniverifyIssuerPage() {
 								value={revokeInternalRef}
 								onChange={(e) => {
 									setRevokeInternalRef(e.target.value);
-									if (
-										revokeTx.kind === "success" ||
-										revokeTx.kind === "error"
-									) {
+									if (revokeTx.kind === "success" || revokeTx.kind === "error") {
 										setRevokeTx({ kind: "idle" });
 									}
 								}}
@@ -797,13 +1024,16 @@ export default function UniverifyIssuerPage() {
 								}
 								className="btn-accent"
 								style={{
-									background:
-										"linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
+									background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
 									boxShadow:
 										"0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)",
 								}}
 							>
-								{revokeTx.kind === "sending" ? "Signing..." : revokeTx.kind === "submitted" ? "Confirming..." : "Revoke"}
+								{revokeTx.kind === "sending"
+									? "Signing..."
+									: revokeTx.kind === "submitted"
+										? "Confirming..."
+										: "Revoke"}
 							</button>
 							{revokeTx.kind === "submitted" && (
 								<p className="text-xs text-text-tertiary font-mono break-all">
@@ -872,16 +1102,19 @@ function IssuerPanel({
 				<AuthorizationBadge status={status} />
 			</div>
 			<p className="text-xs text-text-muted">
-				Issuance authorization is read from the Univerify contract on every change. You
-				must be an <strong>Active</strong> issuer — apply and get approved on the Governance
-				page first.
+				Issuance authorization is read from the Univerify contract on every change. You must
+				be an <strong>Active</strong> issuer — apply and get approved on the Governance page
+				first.
 			</p>
 		</div>
 	);
 }
 
 function BlockedState({ status }: { status: AuthStatus }) {
-	const msg: Record<AuthStatus, { title: string; body: string; tone: "muted" | "red" | "orange" }> = {
+	const msg: Record<
+		AuthStatus,
+		{ title: string; body: string; tone: "muted" | "red" | "orange" }
+	> = {
 		"no-wallet": {
 			title: "Wallet not connected",
 			body: "Connect a Polkadot-compatible wallet via the button in the top-right to issue or revoke credentials.",
@@ -1015,9 +1248,9 @@ function CanonicalClaimsPanel({ claims }: { claims: CredentialClaims }) {
 					Canonical form (used for hashing)
 				</p>
 				<p className="text-xs text-text-muted mt-1">
-					Strings are upper-cased, NFC-normalized and whitespace-collapsed before
-					hashing. Anyone re-typing these exact values reproduces the same{" "}
-					<code>claimsHash</code> regardless of casing.
+					Strings are upper-cased, NFC-normalized and whitespace-collapsed before hashing.
+					Anyone re-typing these exact values reproduces the same <code>claimsHash</code>{" "}
+					regardless of casing.
 				</p>
 			</div>
 			<dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs font-mono text-text-primary">
@@ -1061,8 +1294,8 @@ function VerifyLinkRow({ certificateId }: { certificateId: Hex }) {
 				</button>
 			</div>
 			<p className="text-xs text-text-muted mt-2">
-				Anyone with the link can verify the certificate's existence, issuer, and
-				revocation status on-chain — no wallet required.
+				Anyone with the link can verify the certificate's existence, issuer, and revocation
+				status on-chain — no wallet required.
 			</p>
 		</div>
 	);
