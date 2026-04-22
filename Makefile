@@ -80,6 +80,33 @@ check-ipfs:
 		exit 1; \
 	fi
 
+# ─── Verify deployment ────────────────────────────────────────────────────────
+
+RPC_URL    := https://eth-asset-hub-paseo.dotters.network
+UNIVERIFY  := $(shell node -e "try{const d=require('./deployments.json');process.stdout.write(d.univerify||'')}catch(e){}")
+CERT_NFT   := $(shell node -e "try{const d=require('./deployments.json');process.stdout.write(d.certificateNft||'')}catch(e){}")
+
+.PHONY: check-deployed
+check-deployed:
+	@echo "=== Checking Univerify deployment on Paseo Asset Hub ==="
+	@echo "  RPC: $(RPC_URL)"
+	@echo ""
+	@$(MAKE) --no-print-directory _check-one ADDR="$(UNIVERIFY)"   LABEL="Univerify      "
+	@$(MAKE) --no-print-directory _check-one ADDR="$(CERT_NFT)"    LABEL="CertificateNft "
+	@echo ""
+
+.PHONY: _check-one
+_check-one:
+	@CODE=$$(curl -sf -X POST $(RPC_URL) \
+		-H "Content-Type: application/json" \
+		-d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"$(ADDR)\",\"latest\"]}" \
+		| node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(r.result||'0x')}catch(e){process.stdout.write('0x')}})"); \
+	if [ "$$CODE" = "0x" ] || [ -z "$$CODE" ]; then \
+		echo "  $(LABEL) $(ADDR)  ✗  NOT deployed"; \
+	else \
+		echo "  $(LABEL) $(ADDR)  ✓  deployed (bytecode: $${#CODE} chars)"; \
+	fi
+
 # ─── Guards ───────────────────────────────────────────────────────────────────
 
 .PHONY: check-key
