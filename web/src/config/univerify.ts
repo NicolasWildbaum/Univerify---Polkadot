@@ -10,6 +10,7 @@ export const univerifyAbi = [
 		inputs: [
 			{ name: "name", type: "string" },
 			{ name: "metadataHash", type: "bytes32" },
+			{ name: "bulletinRef", type: "string" },
 		],
 		outputs: [],
 		stateMutability: "nonpayable",
@@ -71,6 +72,16 @@ export const univerifyAbi = [
 		outputs: [],
 		stateMutability: "nonpayable",
 	},
+	{
+		type: "function",
+		name: "setCertificatePdfCid",
+		inputs: [
+			{ name: "certificateId", type: "bytes32" },
+			{ name: "pdfCid", type: "string" },
+		],
+		outputs: [],
+		stateMutability: "nonpayable",
+	},
 
 	// ── Verification ────────────────────────────────────────────────
 	{
@@ -101,6 +112,13 @@ export const univerifyAbi = [
 		],
 		stateMutability: "view",
 	},
+	{
+		type: "function",
+		name: "certificatePdfCids",
+		inputs: [{ name: "", type: "bytes32" }],
+		outputs: [{ name: "", type: "string" }],
+		stateMutability: "view",
+	},
 
 	// ── Issuer reads ────────────────────────────────────────────────
 	{
@@ -115,6 +133,7 @@ export const univerifyAbi = [
 					{ name: "account", type: "address" },
 					{ name: "status", type: "uint8" },
 					{ name: "metadataHash", type: "bytes32" },
+					{ name: "bulletinRef", type: "string" },
 					{ name: "name", type: "string" },
 					{ name: "registeredAt", type: "uint64" },
 					{ name: "approvalCount", type: "uint32" },
@@ -238,6 +257,7 @@ export const univerifyAbi = [
 			{ name: "issuer", type: "address", indexed: true },
 			{ name: "name", type: "string", indexed: false },
 			{ name: "metadataHash", type: "bytes32", indexed: false },
+			{ name: "bulletinRef", type: "string", indexed: false },
 		],
 	},
 	{
@@ -295,6 +315,15 @@ export const univerifyAbi = [
 		inputs: [
 			{ name: "certificateId", type: "bytes32", indexed: true },
 			{ name: "issuer", type: "address", indexed: true },
+		],
+	},
+	{
+		type: "event",
+		name: "CertificatePdfCidSet",
+		inputs: [
+			{ name: "certificateId", type: "bytes32", indexed: true },
+			{ name: "student", type: "address", indexed: true },
+			{ name: "pdfCid", type: "string", indexed: false },
 		],
 	},
 	{

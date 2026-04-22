@@ -47,6 +47,8 @@ export type UniverifyErrorName =
 	| "CertificateNotFound"
 	| "NotCertificateIssuer"
 	| "CertificateAlreadyRevoked"
+	| "NotCertificateHolder"
+	| "EmptyPdfCid"
 	// NFT wiring errors (Univerify ↔ CertificateNft)
 	| "NftAlreadySet"
 	| "NftNotConfigured"
@@ -84,6 +86,8 @@ const KNOWN_ERROR_NAMES: readonly UniverifyErrorName[] = [
 	"CertificateNotFound",
 	"NotCertificateIssuer",
 	"CertificateAlreadyRevoked",
+	"NotCertificateHolder",
+	"EmptyPdfCid",
 	"NftAlreadySet",
 	"NftNotConfigured",
 	"NftMinterMismatch",
