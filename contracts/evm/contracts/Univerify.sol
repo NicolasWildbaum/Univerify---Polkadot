@@ -11,6 +11,10 @@ interface ICertificateNft {
 	function mintFor(address to, bytes32 certificateId) external returns (uint256);
 
 	function minter() external view returns (address);
+
+	function certIdToTokenId(bytes32 certificateId) external view returns (uint256);
+
+	function ownerOf(uint256 tokenId) external view returns (address);
 }
 
 /// @title Univerify — Federated Academic Credential Registry
@@ -65,10 +69,14 @@ contract Univerify {
 	/// @dev `name` is kept on-chain to make the waitlist and verification UIs
 	///      self-contained without requiring an off-chain metadata resolver.
 	///      Its length is bounded by `MAX_NAME_LENGTH` to cap storage cost.
+	///      `bulletinRef` is an optional pointer to the Bulletin Chain block
+	///      where the full metadata JSON was stored (format: "<blockNumber>").
+	///      Empty string means no Bulletin Chain metadata was submitted.
 	struct Issuer {
 		address account;
 		IssuerStatus status;
 		bytes32 metadataHash;
+		string bulletinRef;
 		string name;
 		uint64 registeredAt;
 		uint32 approvalCount;
@@ -124,6 +132,8 @@ contract Univerify {
 	error CertificateNotFound();
 	error CertificateAlreadyRevoked();
 	error NotCertificateIssuer();
+	error NotCertificateHolder();
+	error EmptyPdfCid();
 
 	error NftAlreadySet();
 	error NftNotConfigured();
@@ -212,9 +222,16 @@ contract Univerify {
 	///         minter-matches-self sanity check).
 	address public certificateNft;
 
+	/// @notice Optional Bulletin/IPFS PDF attachment pointer keyed by
+	///         `certificateId`. Empty string means no PDF has been attached.
+	/// @dev    The current NFT holder controls this pointer via
+	///         `setCertificatePdfCid`; the on-chain `claimsHash` remains the
+	///         integrity anchor regardless of whether a PDF exists.
+	mapping(bytes32 => string) public certificatePdfCids;
+
 	// ── Events ──────────────────────────────────────────────────────────
 
-	event IssuerApplied(address indexed issuer, string name, bytes32 metadataHash);
+	event IssuerApplied(address indexed issuer, string name, bytes32 metadataHash, string bulletinRef);
 	event IssuerApproved(address indexed approver, address indexed issuer, uint32 approvalCount);
 	event IssuerActivated(address indexed issuer);
 
@@ -232,6 +249,11 @@ contract Univerify {
 		address indexed student
 	);
 	event CertificateRevoked(bytes32 indexed certificateId, address indexed issuer);
+	event CertificatePdfCidSet(
+		bytes32 indexed certificateId,
+		address indexed student,
+		string pdfCid
+	);
 	event CertificateNftSet(address indexed nft);
 
 	// ── Modifiers ───────────────────────────────────────────────────────
@@ -268,6 +290,7 @@ contract Univerify {
 				account: g.account,
 				status: IssuerStatus.Active,
 				metadataHash: g.metadataHash,
+				bulletinRef: "",
 				name: g.name,
 				registeredAt: uint64(block.timestamp),
 				approvalCount: 0
@@ -291,9 +314,12 @@ contract Univerify {
 	///         the previous round cannot count toward this one. `Pending`
 	///         and `Active` callers remain rejected with `IssuerAlreadyExists`.
 	/// @param  name          Human-readable institution name (1..MAX_NAME_LENGTH bytes).
-	/// @param  metadataHash  Off-chain metadata commitment (DID doc, IPFS CID,
-	///                       etc.). Not resolved on-chain.
-	function applyAsIssuer(string calldata name, bytes32 metadataHash) external {
+	/// @param  metadataHash  keccak256 of the canonical metadata JSON uploaded to
+	///                       Bulletin Chain. Zero bytes32 if no metadata provided.
+	/// @param  bulletinRef   Bulletin Chain block number where the metadata JSON was
+	///                       stored (decimal string, e.g. "12345"). Empty string if
+	///                       no Bulletin Chain upload was performed.
+	function applyAsIssuer(string calldata name, bytes32 metadataHash, string calldata bulletinRef) external {
 		_validateName(name);
 		IssuerStatus prev = _issuers[msg.sender].status;
 		if (prev == IssuerStatus.Pending || prev == IssuerStatus.Active) {
@@ -314,12 +340,13 @@ contract Univerify {
 			account: msg.sender,
 			status: IssuerStatus.Pending,
 			metadataHash: metadataHash,
+			bulletinRef: bulletinRef,
 			name: name,
 			registeredAt: uint64(block.timestamp),
 			approvalCount: 0
 		});
 
-		emit IssuerApplied(msg.sender, name, metadataHash);
+		emit IssuerApplied(msg.sender, name, metadataHash, bulletinRef);
 	}
 
 	/// @notice Approve a Pending university. Only Active universities can
@@ -499,6 +526,36 @@ contract Univerify {
 
 		cert.revoked = true;
 		emit CertificateRevoked(certificateId, msg.sender);
+	}
+
+	/// @notice Attach or replace the Bulletin/IPFS CID of the certificate PDF.
+	///         Callable only by the current holder of the soulbound NFT.
+	/// @dev    This keeps PDF upload optional and student-controlled: the
+	///         registry remains valid without any PDF, but when a holder does
+	///         attach one the public verifier can discover it from the bare
+	///         `certificateId` alone.
+	function setCertificatePdfCid(
+		bytes32 certificateId,
+		string calldata pdfCid
+	) external {
+		if (certificateId == bytes32(0)) revert InvalidCertificateId();
+		if (bytes(pdfCid).length == 0) revert EmptyPdfCid();
+
+		Certificate storage cert = certificates[certificateId];
+		if (cert.issuer == address(0)) revert CertificateNotFound();
+
+		address nft = certificateNft;
+		if (nft == address(0)) revert NftNotConfigured();
+
+		uint256 tokenId = ICertificateNft(nft).certIdToTokenId(certificateId);
+		if (
+			tokenId == 0 || ICertificateNft(nft).ownerOf(tokenId) != msg.sender
+		) {
+			revert NotCertificateHolder();
+		}
+
+		certificatePdfCids[certificateId] = pdfCid;
+		emit CertificatePdfCidSet(certificateId, msg.sender, pdfCid);
 	}
 
 	// ── Verification ────────────────────────────────────────────────────

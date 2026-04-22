@@ -36,6 +36,7 @@ function readIssuerStruct(raw: unknown) {
 		account: Address;
 		status: number | bigint;
 		metadataHash: Hex;
+		bulletinRef: string;
 		name: string;
 		registeredAt: bigint;
 		approvalCount: number | bigint;
@@ -44,6 +45,7 @@ function readIssuerStruct(raw: unknown) {
 		account: o.account,
 		status: Number(o.status),
 		metadataHash: o.metadataHash,
+		bulletinRef: o.bulletinRef,
 		name: o.name,
 		registeredAt: o.registeredAt,
 		approvalCount: Number(o.approvalCount),
@@ -142,11 +144,12 @@ async function getConstructorEvents<Args extends Record<string, unknown>>(
 }
 
 // Event argument shapes (mirror contract events)
-type ApplyArgs = { issuer: Address; name: string; metadataHash: Hex };
+type ApplyArgs = { issuer: Address; name: string; metadataHash: Hex; bulletinRef: string };
 type ApproveArgs = { approver: Address; issuer: Address; approvalCount: number | bigint };
 type IssuerAddrArgs = { issuer: Address };
 type CertIssuedArgs = { certificateId: Hex; issuer: Address; student: Address };
 type CertArgs = { certificateId: Hex; issuer: Address };
+type CertPdfArgs = { certificateId: Hex; student: Address; pdfCid: string };
 type RemovalCreatedArgs = {
 	proposalId: bigint;
 	target: Address;
@@ -219,7 +222,7 @@ async function deployWithGenesis() {
 
 async function deployWithPendingApplicant() {
 	const ctx = await loadFixture(deployWithGenesis);
-	await ctx.univerify.write.applyAsIssuer(["Applicant University", metaApplicant], {
+	await ctx.univerify.write.applyAsIssuer(["Applicant University", metaApplicant, ""], {
 		account: ctx.applicant.account,
 	});
 	return ctx;
@@ -429,7 +432,7 @@ describe("Univerify", function () {
 	describe("applyAsIssuer", function () {
 		it("moves caller from None to Pending with a full profile", async function () {
 			const { univerify, applicant } = await loadFixture(deployWithGenesis);
-			await univerify.write.applyAsIssuer(["Applicant University", metaApplicant], {
+			await univerify.write.applyAsIssuer(["Applicant University", metaApplicant, ""], {
 				account: applicant.account,
 			});
 			const profile = readIssuerStruct(
@@ -448,7 +451,7 @@ describe("Univerify", function () {
 
 		it("does not change activeIssuerCount on application", async function () {
 			const { univerify, applicant, genesis } = await loadFixture(deployWithGenesis);
-			await univerify.write.applyAsIssuer(["Applicant University", metaApplicant], {
+			await univerify.write.applyAsIssuer(["Applicant University", metaApplicant, ""], {
 				account: applicant.account,
 			});
 			expect(Number(await univerify.read.activeIssuerCount())).to.equal(genesis.length);
@@ -457,7 +460,7 @@ describe("Univerify", function () {
 		it("appends the applicant to the enumeration list", async function () {
 			const { univerify, applicant, genesis } = await loadFixture(deployWithGenesis);
 			const before = (await univerify.read.issuerCount()) as bigint;
-			await univerify.write.applyAsIssuer(["Applicant University", metaApplicant], {
+			await univerify.write.applyAsIssuer(["Applicant University", metaApplicant, ""], {
 				account: applicant.account,
 			});
 			const after = (await univerify.read.issuerCount()) as bigint;
@@ -470,7 +473,7 @@ describe("Univerify", function () {
 		it("emits IssuerApplied with name and metadataHash", async function () {
 			const { univerify, applicant, publicClient } = await loadFixture(deployWithGenesis);
 			const txHash = await univerify.write.applyAsIssuer(
-				["Applicant University", metaApplicant],
+				["Applicant University", metaApplicant, ""],
 				{ account: applicant.account },
 			);
 			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
@@ -485,7 +488,7 @@ describe("Univerify", function () {
 			const { univerify, applicant } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
-					univerify.write.applyAsIssuer(["", metaApplicant], {
+					univerify.write.applyAsIssuer(["", metaApplicant, ""], {
 						account: applicant.account,
 					}),
 				"EmptyName",
@@ -496,7 +499,7 @@ describe("Univerify", function () {
 			const { univerify, applicant } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
-					univerify.write.applyAsIssuer(["x".repeat(65), metaApplicant], {
+					univerify.write.applyAsIssuer(["x".repeat(65), metaApplicant, ""], {
 						account: applicant.account,
 					}),
 				"NameTooLong",
@@ -507,7 +510,7 @@ describe("Univerify", function () {
 			const { univerify, alice } = await loadFixture(deployWithGenesis);
 			await expectRevert(
 				() =>
-					univerify.write.applyAsIssuer(["UDELAR-dup", metaUdelar], {
+					univerify.write.applyAsIssuer(["UDELAR-dup", metaUdelar, ""], {
 						account: alice.account,
 					}),
 				"IssuerAlreadyExists",
@@ -518,7 +521,7 @@ describe("Univerify", function () {
 			const { univerify, applicant } = await loadFixture(deployWithPendingApplicant);
 			await expectRevert(
 				() =>
-					univerify.write.applyAsIssuer(["Applicant-dup", metaApplicant], {
+					univerify.write.applyAsIssuer(["Applicant-dup", metaApplicant, ""], {
 						account: applicant.account,
 					}),
 				"IssuerAlreadyExists",
@@ -543,7 +546,7 @@ describe("Univerify", function () {
 			])) as number | bigint;
 
 			const reapplyHash = await univerify.write.applyAsIssuer(
-				["UDELAR-reborn", metaUdelar],
+				["UDELAR-reborn", metaUdelar, ""],
 				{ account: alice.account },
 			);
 
@@ -596,7 +599,7 @@ describe("Univerify", function () {
 			await univerify.write.voteForRemoval([proposalId], { account: charlie.account });
 
 			// Re-apply.
-			await univerify.write.applyAsIssuer(["UDELAR-reborn", metaUdelar], {
+			await univerify.write.applyAsIssuer(["UDELAR-reborn", metaUdelar, ""], {
 				account: alice.account,
 			});
 
@@ -649,7 +652,7 @@ describe("Univerify", function () {
 
 			// Round 1: remove → re-apply → re-activate.
 			await removeAlice();
-			await univerify.write.applyAsIssuer(["UDELAR-r1", metaUdelar], {
+			await univerify.write.applyAsIssuer(["UDELAR-r1", metaUdelar, ""], {
 				account: alice.account,
 			});
 			await univerify.write.approveIssuer([alice.account.address], {
@@ -661,7 +664,7 @@ describe("Univerify", function () {
 
 			// Round 2: remove again → re-apply again.
 			await removeAlice();
-			await univerify.write.applyAsIssuer(["UDELAR-r2", metaUdelar], {
+			await univerify.write.applyAsIssuer(["UDELAR-r2", metaUdelar, ""], {
 				account: alice.account,
 			});
 			const epoch = (await univerify.read.issuerEpoch([
@@ -690,13 +693,13 @@ describe("Univerify", function () {
 			])) as bigint;
 			await univerify.write.voteForRemoval([proposalId], { account: charlie.account });
 
-			await univerify.write.applyAsIssuer(["UDELAR-reborn", metaUdelar], {
+			await univerify.write.applyAsIssuer(["UDELAR-reborn", metaUdelar, ""], {
 				account: alice.account,
 			});
 
 			await expectRevert(
 				() =>
-					univerify.write.applyAsIssuer(["UDELAR-dup", metaUdelar], {
+					univerify.write.applyAsIssuer(["UDELAR-dup", metaUdelar, ""], {
 						account: alice.account,
 					}),
 				"IssuerAlreadyExists",
@@ -791,7 +794,7 @@ describe("Univerify", function () {
 			const { univerify, applicant, stranger } = await loadFixture(
 				deployWithPendingApplicant,
 			);
-			await univerify.write.applyAsIssuer(["Second Applicant", metaApplicant], {
+			await univerify.write.applyAsIssuer(["Second Applicant", metaApplicant, ""], {
 				account: stranger.account,
 			});
 			await expectRevert(
@@ -1649,6 +1652,110 @@ describe("Univerify", function () {
 		});
 	});
 
+	describe("setCertificatePdfCid", function () {
+		const pdfCid = "bafkreigh2akiscaildc4f4m2m7s5xv6examplecid1111111111111";
+		const updatedPdfCid = "bafkreigh2akiscaildc4f4m2m7s5xv6examplecid2222222222222";
+
+		it("lets the current NFT holder attach a PDF CID and emits CertificatePdfCidSet", async function () {
+			const { univerify, alice, student, publicClient } =
+				await loadFixture(deployWithGenesis);
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, student.account.address],
+				{ account: alice.account },
+			);
+
+			const txHash = await univerify.write.setCertificatePdfCid(
+				[certificateId, pdfCid],
+				{ account: student.account },
+			);
+
+			expect(await univerify.read.certificatePdfCids([certificateId])).to.equal(pdfCid);
+
+			const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+			const logs = parseLogs<CertPdfArgs>(
+				univerify.abi as Abi,
+				receipt.logs,
+				"CertificatePdfCidSet",
+			);
+			expect(logs).to.have.lengthOf(1);
+			expect(logs[0].args.certificateId).to.equal(certificateId);
+			expect(getAddress(logs[0].args.student)).to.equal(getAddress(student.account.address));
+			expect(logs[0].args.pdfCid).to.equal(pdfCid);
+		});
+
+		it("allows the holder to replace an existing PDF CID", async function () {
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, student.account.address],
+				{ account: alice.account },
+			);
+
+			await univerify.write.setCertificatePdfCid([certificateId, pdfCid], {
+				account: student.account,
+			});
+			await univerify.write.setCertificatePdfCid([certificateId, updatedPdfCid], {
+				account: student.account,
+			});
+
+			expect(await univerify.read.certificatePdfCids([certificateId])).to.equal(
+				updatedPdfCid,
+			);
+		});
+
+		it("reverts InvalidCertificateId on zero id", async function () {
+			const { univerify, student } = await loadFixture(deployWithGenesis);
+			await expectRevert(
+				() =>
+					univerify.write.setCertificatePdfCid([ZERO_BYTES32, pdfCid], {
+						account: student.account,
+					}),
+				"InvalidCertificateId",
+			);
+		});
+
+		it("reverts EmptyPdfCid when cid is blank", async function () {
+			const { univerify, alice, student } = await loadFixture(deployWithGenesis);
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, student.account.address],
+				{ account: alice.account },
+			);
+			await expectRevert(
+				() =>
+					univerify.write.setCertificatePdfCid([certificateId, ""], {
+						account: student.account,
+					}),
+				"EmptyPdfCid",
+			);
+		});
+
+		it("reverts CertificateNotFound for an unknown certificate", async function () {
+			const { univerify, student } = await loadFixture(deployWithGenesis);
+			await expectRevert(
+				() =>
+					univerify.write.setCertificatePdfCid([certificateId, pdfCid], {
+						account: student.account,
+					}),
+				"CertificateNotFound",
+			);
+		});
+
+		it("reverts NotCertificateHolder when a non-holder tries to attach a CID", async function () {
+			const { univerify, alice, student, stranger } =
+				await loadFixture(deployWithGenesis);
+			await univerify.write.issueCertificate(
+				[certificateId, claimsHash, student.account.address],
+				{ account: alice.account },
+			);
+			await expectRevert(
+				() =>
+					univerify.write.setCertificatePdfCid([certificateId, pdfCid], {
+						account: stranger.account,
+					}),
+				"NotCertificateHolder",
+			);
+		});
+	});
+
 	// ── Verification ─────────────────────────────────────────────────
 
 	describe("verifyCertificate", function () {
@@ -1810,10 +1917,10 @@ describe("Univerify", function () {
 		it("issuerCount and issuerAt expose genesis first, then applicants in apply order", async function () {
 			const { univerify, applicant, stranger, genesis } =
 				await loadFixture(deployWithGenesis);
-			await univerify.write.applyAsIssuer(["Applicant", metaApplicant], {
+			await univerify.write.applyAsIssuer(["Applicant", metaApplicant, ""], {
 				account: applicant.account,
 			});
-			await univerify.write.applyAsIssuer(["Stranger Uni", metaApplicant], {
+			await univerify.write.applyAsIssuer(["Stranger Uni", metaApplicant, ""], {
 				account: stranger.account,
 			});
 			expect((await univerify.read.issuerCount()) as bigint).to.equal(
