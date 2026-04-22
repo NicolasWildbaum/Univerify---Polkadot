@@ -23,12 +23,6 @@ import {
 import type { PolkadotSigner } from "polkadot-api";
 import { getSs58AddressInfo, Keccak256 } from "@polkadot-api/substrate-bindings";
 import type { Address } from "viem";
-import {
-	getRuntimeContextSnapshot,
-	logDiagnostic,
-	serializeError,
-	setDiagnosticState,
-} from "../utils/diagnostics";
 
 const STORAGE_KEY = "univerify:wallet";
 
@@ -122,50 +116,14 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 
 	refreshExtensions: () => {
 		try {
-			const availableExtensions = getInjectedExtensions();
-			set({ availableExtensions });
-			setDiagnosticState("wallet.discovery", {
-				availableExtensions,
-				runtime: getRuntimeContextSnapshot(),
-			});
-			logDiagnostic(
-				"wallet",
-				"extensions_refreshed",
-				{
-					availableExtensions,
-					runtime: getRuntimeContextSnapshot(),
-				},
-				availableExtensions.length === 0 ? "warn" : "info",
-			);
-		} catch (error) {
+			set({ availableExtensions: getInjectedExtensions() });
+		} catch {
 			set({ availableExtensions: [] });
-			logDiagnostic(
-				"wallet",
-				"extensions_refresh_failed",
-				{
-					error: serializeError(error),
-					runtime: getRuntimeContextSnapshot(),
-				},
-				"error",
-			);
 		}
 	},
 
 	connect: async (extensionName, preferredAddress) => {
 		set({ status: { kind: "connecting" } });
-		setDiagnosticState("wallet.connection", {
-			phase: "connecting",
-			extensionName,
-			preferredAddress: preferredAddress ?? null,
-			availableExtensions: get().availableExtensions,
-			runtime: getRuntimeContextSnapshot(),
-		});
-		logDiagnostic("wallet", "connect_requested", {
-			extensionName,
-			preferredAddress: preferredAddress ?? null,
-			availableExtensions: get().availableExtensions,
-			runtime: getRuntimeContextSnapshot(),
-		});
 		try {
 			currentUnsubscribe?.();
 			const connectionTimeout = new Promise<never>((_, reject) =>
@@ -184,22 +142,8 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 				connectionTimeout,
 			]);
 			currentExtensionName = extensionName;
-			logDiagnostic("wallet", "extension_connected", { extensionName });
 
 			const accounts = ext.getAccounts();
-			logDiagnostic(
-				"wallet",
-				"accounts_loaded",
-				{
-					extensionName,
-					accountCount: accounts.length,
-					accounts: accounts.map((account) => ({
-						address: account.address,
-						name: account.name ?? null,
-					})),
-				},
-				accounts.length === 0 ? "warn" : "info",
-			);
 			if (accounts.length === 0) {
 				ext.disconnect();
 				currentExtensionName = null;
@@ -218,31 +162,12 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 				accounts[0];
 
 			currentUnsubscribe = ext.subscribe((updated) => {
-				logDiagnostic(
-					"wallet",
-					"accounts_updated",
-					{
-						extensionName,
-						accountCount: updated.length,
-						addresses: updated.map((account) => account.address),
-					},
-					"debug",
-				);
 				set({ extensionAccounts: updated });
 				const cur = get().status;
 				if (cur.kind === "connected") {
 					const stillThere = updated.find((a) => a.address === cur.account.address);
 					if (!stillThere) {
 						// User removed the account inside the extension — log out.
-						logDiagnostic(
-							"wallet",
-							"active_account_removed",
-							{
-								extensionName,
-								address: cur.account.address,
-							},
-							"warn",
-						);
 						get().disconnect();
 					} else if (stillThere !== cur.account) {
 						set({
@@ -260,26 +185,6 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 				status: { kind: "connected", extensionName, account: picked },
 				extensionAccounts: accounts,
 			});
-			setDiagnosticState("wallet.connection", {
-				phase: "connected",
-				extensionName,
-				account: {
-					address: picked.address,
-					name: picked.name ?? null,
-				},
-				evmAddress: ss58ToEvmAddress(picked.address),
-				accountCount: accounts.length,
-				runtime: getRuntimeContextSnapshot(),
-			});
-			logDiagnostic("wallet", "connected", {
-				extensionName,
-				account: {
-					address: picked.address,
-					name: picked.name ?? null,
-				},
-				evmAddress: ss58ToEvmAddress(picked.address),
-				accountCount: accounts.length,
-			});
 			persist({ extensionName, address: picked.address });
 		} catch (err) {
 			currentUnsubscribe?.();
@@ -292,25 +197,6 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 				},
 				extensionAccounts: [],
 			});
-			setDiagnosticState("wallet.connection", {
-				phase: "error",
-				extensionName,
-				preferredAddress: preferredAddress ?? null,
-				error: serializeError(err),
-				runtime: getRuntimeContextSnapshot(),
-			});
-			logDiagnostic(
-				"wallet",
-				"connect_failed",
-				{
-					extensionName,
-					preferredAddress: preferredAddress ?? null,
-					error: serializeError(err),
-					availableExtensions: get().availableExtensions,
-					runtime: getRuntimeContextSnapshot(),
-				},
-				"error",
-			);
 		}
 	},
 
@@ -326,38 +212,14 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 				account: next,
 			},
 		});
-		setDiagnosticState("wallet.connection", {
-			phase: "connected",
-			extensionName: status.extensionName,
-			account: {
-				address: next.address,
-				name: next.name ?? null,
-			},
-			evmAddress: ss58ToEvmAddress(next.address),
-		});
-		logDiagnostic("wallet", "account_selected", {
-			extensionName: status.extensionName,
-			account: {
-				address: next.address,
-				name: next.name ?? null,
-			},
-			evmAddress: ss58ToEvmAddress(next.address),
-		});
 		persist({ extensionName: status.extensionName, address: next.address });
 	},
 
 	disconnect: () => {
-		logDiagnostic("wallet", "disconnect_requested", {
-			extensionName: currentExtensionName,
-		});
 		currentUnsubscribe?.();
 		currentUnsubscribe = null;
 		currentExtensionName = null;
 		persist(null);
-		setDiagnosticState("wallet.connection", {
-			phase: "disconnected",
-			runtime: getRuntimeContextSnapshot(),
-		});
 		set({
 			status: { kind: "disconnected" },
 			extensionAccounts: [],
@@ -366,23 +228,14 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 
 	restore: async () => {
 		const stored = loadStored();
-		if (!stored) {
-			logDiagnostic("wallet", "restore_skipped", { reason: "no_stored_wallet" }, "debug");
-			return;
-		}
-		logDiagnostic("wallet", "restore_requested", {
-			stored,
-			runtime: getRuntimeContextSnapshot(),
-		});
+		if (!stored) return;
 		// Best-effort: attempt to reconnect silently. If the user hasn't
 		// authorized us yet the extension will throw and we stay disconnected.
 		try {
 			await get().connect(stored.extensionName, stored.address);
-			logDiagnostic("wallet", "restore_completed", { stored });
 		} catch {
 			// Swallow — the error path in `connect` already set `error` status
 			// if relevant.
-			logDiagnostic("wallet", "restore_failed", { stored }, "warn");
 		}
 	},
 }));

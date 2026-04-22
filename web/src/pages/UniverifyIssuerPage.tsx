@@ -32,12 +32,6 @@ import { buildAppHashUrl } from "../utils/appUrl";
 import { storeGeneratedCertificatePdf } from "../utils/certificatePdfStore";
 import { extractRevertName } from "../utils/contractErrors";
 import { MonthYearPicker } from "../components/MonthYearPicker";
-import {
-	getRuntimeContextSnapshot,
-	logDiagnostic,
-	serializeError,
-	setDiagnosticState,
-} from "../utils/diagnostics";
 
 const STORAGE_KEY_PREFIX = "univerify:address";
 
@@ -170,34 +164,12 @@ export default function UniverifyIssuerPage() {
 		let cancelled = false;
 		(async () => {
 			try {
-				logDiagnostic("issuer-auth", "check_started", {
-					ethRpcUrl,
-					contractAddress,
-					issuerAddress,
-				});
 				const client = getPublicClient(ethRpcUrl);
 				const addr = contractAddress as Address;
 				const code = await client.getCode({ address: addr });
 				if (cancelled) return;
 				if (!code || code === "0x") {
 					setOnChainStatus("unknown");
-					setDiagnosticState("issuer.auth", {
-						status: "unknown",
-						reason: "no_code",
-						ethRpcUrl,
-						contractAddress,
-						issuerAddress,
-					});
-					logDiagnostic(
-						"issuer-auth",
-						"contract_code_missing",
-						{
-							ethRpcUrl,
-							contractAddress,
-							issuerAddress,
-						},
-						"warn",
-					);
 					return;
 				}
 				const issuer = (await client.readContract({
@@ -222,39 +194,9 @@ export default function UniverifyIssuerPage() {
 						nextStatus = "not-registered";
 				}
 				setOnChainStatus(nextStatus);
-				setDiagnosticState("issuer.auth", {
-					status: nextStatus,
-					ethRpcUrl,
-					contractAddress,
-					issuerAddress,
-				});
-				logDiagnostic("issuer-auth", "check_completed", {
-					status: nextStatus,
-					ethRpcUrl,
-					contractAddress,
-					issuerAddress,
-				});
-			} catch (error) {
+			} catch {
 				if (cancelled) return;
 				setOnChainStatus("unknown");
-				setDiagnosticState("issuer.auth", {
-					status: "unknown",
-					ethRpcUrl,
-					contractAddress,
-					issuerAddress,
-					error: serializeError(error),
-				});
-				logDiagnostic(
-					"issuer-auth",
-					"check_failed",
-					{
-						ethRpcUrl,
-						contractAddress,
-						issuerAddress,
-						error: serializeError(error),
-					},
-					"error",
-				);
 			}
 		})();
 		return () => {
@@ -347,43 +289,11 @@ export default function UniverifyIssuerPage() {
 		}
 		const student = resolvedStudent;
 		setTx({ kind: "sending" });
-		setDiagnosticState("issuer.lastIssueAttempt", {
-			phase: "sending",
-			ethRpcUrl,
-			wsUrl,
-			contractAddress,
-			issuerAddress,
-			studentInput: trimmedStudent,
-			studentAddress: student,
-			certificateId: preview.certificateId,
-			claimsHash: preview.claimsHash,
-			runtime: getRuntimeContextSnapshot(),
-		});
-		logDiagnostic("issuer-issue", "requested", {
-			ethRpcUrl,
-			wsUrl,
-			contractAddress,
-			issuerAddress,
-			studentInput: trimmedStudent,
-			studentAddress: student,
-			certificateId: preview.certificateId,
-			claimsHash: preview.claimsHash,
-		});
 		try {
 			const publicClient = getPublicClient(ethRpcUrl);
 			const addr = contractAddress as Address;
 			const code = await publicClient.getCode({ address: addr });
 			if (!code || code === "0x") {
-				logDiagnostic(
-					"issuer-issue",
-					"contract_code_missing",
-					{
-						ethRpcUrl,
-						contractAddress: addr,
-						issuerAddress,
-					},
-					"error",
-				);
 				setTx({
 					kind: "error",
 					message: `No Univerify contract found at this address on ${ethRpcUrl}. Deploy one first or update the address.`,
@@ -404,29 +314,13 @@ export default function UniverifyIssuerPage() {
 					functionName: "issueCertificate",
 					args: [preview.certificateId, preview.claimsHash, student],
 				});
-				logDiagnostic(
-					"issuer-issue",
-					"preflight_ok",
-					{
-						contractAddress: addr,
-						issuerAddress,
-						studentAddress: student,
-						certificateId: preview.certificateId,
-					},
-					"debug",
-				);
 			} catch (simErr) {
-				logDiagnostic(
-					"issuer-issue",
-					"preflight_reverted",
-					{
-						issuerAddress,
-						student,
-						certificateId: preview.certificateId,
-						error: serializeError(simErr),
-					},
-					"warn",
-				);
+				console.warn("[Univerify] issueCertificate pre-flight reverted", {
+					issuerAddress,
+					student,
+					certificateId: preview.certificateId,
+					error: simErr,
+				});
 				throw simErr;
 			}
 
@@ -439,22 +333,6 @@ export default function UniverifyIssuerPage() {
 				functionName: "issueCertificate",
 				args: [preview.certificateId, preview.claimsHash, student],
 				onBroadcast: (hash) => setTx({ kind: "submitted", hash }),
-			});
-			logDiagnostic("issuer-issue", "tx_included", {
-				txHash: result.txHash,
-				block: result.block,
-				issuerAddress,
-				studentAddress: student,
-				certificateId: preview.certificateId,
-			});
-			setDiagnosticState("issuer.lastIssueAttempt", {
-				phase: "success",
-				txHash: result.txHash,
-				block: result.block,
-				issuerAddress,
-				studentAddress: student,
-				certificateId: preview.certificateId,
-				claimsHash: preview.claimsHash,
 			});
 
 			storeGeneratedCertificatePdf({
@@ -471,34 +349,7 @@ export default function UniverifyIssuerPage() {
 				studentAddress: student,
 			});
 		} catch (e) {
-			logDiagnostic(
-				"issuer-issue",
-				"failed",
-				{
-					ethRpcUrl,
-					wsUrl,
-					contractAddress,
-					issuerAddress,
-					studentInput: trimmedStudent,
-					studentAddress: student,
-					certificateId: preview.certificateId,
-					claimsHash: preview.claimsHash,
-					error: serializeError(e),
-				},
-				"error",
-			);
-			setDiagnosticState("issuer.lastIssueAttempt", {
-				phase: "error",
-				ethRpcUrl,
-				wsUrl,
-				contractAddress,
-				issuerAddress,
-				studentInput: trimmedStudent,
-				studentAddress: student,
-				certificateId: preview.certificateId,
-				claimsHash: preview.claimsHash,
-				error: serializeError(e),
-			});
+			console.error("Issue failed:", e);
 			const revert = extractRevertName(e);
 			const message =
 				revert === "NotActiveIssuer"
@@ -537,40 +388,12 @@ export default function UniverifyIssuerPage() {
 		const certificateId = deriveCertificateId(issuerAddress, ref);
 
 		setRevokeTx({ kind: "sending" });
-		setDiagnosticState("issuer.lastRevokeAttempt", {
-			phase: "sending",
-			ethRpcUrl,
-			wsUrl,
-			contractAddress,
-			issuerAddress,
-			internalRef: ref,
-			certificateId,
-			runtime: getRuntimeContextSnapshot(),
-		});
-		logDiagnostic("issuer-revoke", "requested", {
-			ethRpcUrl,
-			wsUrl,
-			contractAddress,
-			issuerAddress,
-			internalRef: ref,
-			certificateId,
-		});
 
 		try {
 			const publicClient = getPublicClient(ethRpcUrl);
 			const addr = contractAddress as Address;
 			const code = await publicClient.getCode({ address: addr });
 			if (!code || code === "0x") {
-				logDiagnostic(
-					"issuer-revoke",
-					"contract_code_missing",
-					{
-						ethRpcUrl,
-						contractAddress: addr,
-						issuerAddress,
-					},
-					"error",
-				);
 				setRevokeTx({
 					kind: "error",
 					message: `No Univerify contract found at this address on ${ethRpcUrl}.`,
@@ -587,17 +410,6 @@ export default function UniverifyIssuerPage() {
 				functionName: "revokeCertificate",
 				args: [certificateId],
 			});
-			logDiagnostic(
-				"issuer-revoke",
-				"preflight_ok",
-				{
-					contractAddress: addr,
-					issuerAddress,
-					internalRef: ref,
-					certificateId,
-				},
-				"debug",
-			);
 
 			const result = await submitReviveCall({
 				wsUrl,
@@ -609,21 +421,6 @@ export default function UniverifyIssuerPage() {
 				args: [certificateId],
 				onBroadcast: (hash) => setRevokeTx({ kind: "submitted", hash }),
 			});
-			logDiagnostic("issuer-revoke", "tx_included", {
-				txHash: result.txHash,
-				block: result.block,
-				issuerAddress,
-				internalRef: ref,
-				certificateId,
-			});
-			setDiagnosticState("issuer.lastRevokeAttempt", {
-				phase: "success",
-				txHash: result.txHash,
-				block: result.block,
-				issuerAddress,
-				internalRef: ref,
-				certificateId,
-			});
 
 			setRevokeTx({
 				kind: "success",
@@ -632,30 +429,7 @@ export default function UniverifyIssuerPage() {
 				internalRef: ref,
 			});
 		} catch (e) {
-			logDiagnostic(
-				"issuer-revoke",
-				"failed",
-				{
-					ethRpcUrl,
-					wsUrl,
-					contractAddress,
-					issuerAddress,
-					internalRef: ref,
-					certificateId,
-					error: serializeError(e),
-				},
-				"error",
-			);
-			setDiagnosticState("issuer.lastRevokeAttempt", {
-				phase: "error",
-				ethRpcUrl,
-				wsUrl,
-				contractAddress,
-				issuerAddress,
-				internalRef: ref,
-				certificateId,
-				error: serializeError(e),
-			});
+			console.error("Revoke failed:", e);
 			const revert = extractRevertName(e);
 			const message =
 				revert === "NotActiveIssuer"
