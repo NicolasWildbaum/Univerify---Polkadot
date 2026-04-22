@@ -23,6 +23,8 @@ import {
 	type SignedPresentation,
 } from "../utils/ownershipProof";
 import { MonthYearPicker } from "../components/MonthYearPicker";
+import { fetchMetadataFromBulletin } from "../hooks/useBulletin";
+import type { IssuerMetadata } from "../utils/issuerMetadata";
 
 const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000";
 
@@ -44,6 +46,8 @@ interface VerificationData {
 	issuer: Address;
 	issuerName: string;
 	issuerStatus: number;
+	issuerMetadataHash: Hex;
+	issuerBulletinRef: string;
 	claimsHash: Hex;
 	issuedAt: bigint;
 	revoked: boolean;
@@ -51,6 +55,13 @@ interface VerificationData {
 	tokenId: bigint | null;
 	pdfCid: string;
 }
+
+type MetadataFetchState =
+	| { kind: "idle" }
+	| { kind: "loading" }
+	| { kind: "found"; metadata: IssuerMetadata }
+	| { kind: "not-found" }
+	| { kind: "error"; message: string };
 
 type PdfIntegrityState =
 	| { kind: "idle" }
@@ -87,6 +98,7 @@ export default function PublicVerifyPage() {
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [pdfIntegrity, setPdfIntegrity] = useState<PdfIntegrityState>({ kind: "idle" });
+	const [metadataFetch, setMetadataFetch] = useState<MetadataFetchState>({ kind: "idle" });
 
 	const presentationParam = searchParams.get("presentation");
 	const [decodedPresentation, setDecodedPresentation] =
@@ -120,6 +132,8 @@ export default function PublicVerifyPage() {
 
 				let issuerName = "";
 				let issuerStatus = 0;
+				let issuerMetadataHash: Hex = "0x0000000000000000000000000000000000000000000000000000000000000000";
+				let issuerBulletinRef = "";
 				let pdfCid = "";
 				if (exists) {
 					try {
@@ -137,9 +151,16 @@ export default function PublicVerifyPage() {
 								args: [certificateId],
 							}),
 						]);
-						const typedProfile = profile as { name: string; status: number | bigint };
+						const typedProfile = profile as {
+							name: string;
+							status: number | bigint;
+							metadataHash: Hex;
+							bulletinRef: string;
+						};
 						issuerName = typedProfile.name ?? "";
 						issuerStatus = Number(typedProfile.status);
+						issuerMetadataHash = typedProfile.metadataHash ?? issuerMetadataHash;
+						issuerBulletinRef = typedProfile.bulletinRef ?? "";
 						pdfCid = (attachedPdfCid as string) ?? "";
 					} catch {
 						// Best-effort reads only.
@@ -177,6 +198,8 @@ export default function PublicVerifyPage() {
 					issuer,
 					issuerName,
 					issuerStatus,
+					issuerMetadataHash,
+					issuerBulletinRef,
 					claimsHash,
 					issuedAt,
 					revoked,
@@ -273,6 +296,31 @@ export default function PublicVerifyPage() {
 		};
 	}, [data]);
 
+	// Fetch issuer metadata from Bulletin Chain when bulletinRef is set.
+	useEffect(() => {
+		if (!data?.exists || !data.issuerBulletinRef) {
+			setMetadataFetch({ kind: "idle" });
+			return;
+		}
+		let cancelled = false;
+		setMetadataFetch({ kind: "loading" });
+
+		fetchMetadataFromBulletin(data.issuerBulletinRef, data.issuerMetadataHash)
+			.then((result) => {
+				if (cancelled) return;
+				setMetadataFetch(result ? { kind: "found", metadata: result } : { kind: "not-found" });
+			})
+			.catch((err: unknown) => {
+				if (cancelled) return;
+				setMetadataFetch({
+					kind: "error",
+					message: err instanceof Error ? err.message : String(err),
+				});
+			});
+
+		return () => { cancelled = true; };
+	}, [data?.exists, data?.issuerBulletinRef, data?.issuerMetadataHash]);
+
 	useEffect(() => {
 		if (!presentationParam) {
 			setDecodedPresentation(null);
@@ -362,6 +410,7 @@ export default function PublicVerifyPage() {
 					proofVerifying={proofVerifying}
 					proofVerdict={proofVerdict}
 					pdfIntegrity={pdfIntegrity}
+					metadataFetch={metadataFetch}
 				/>
 			) : null}
 		</div>
@@ -376,6 +425,7 @@ function ResultCard({
 	proofVerifying,
 	proofVerdict,
 	pdfIntegrity,
+	metadataFetch,
 }: {
 	data: VerificationData;
 	nftConfigured: boolean;
@@ -384,6 +434,7 @@ function ResultCard({
 	proofVerifying: boolean;
 	proofVerdict: OwnershipVerdict | null;
 	pdfIntegrity: PdfIntegrityState;
+	metadataFetch: MetadataFetchState;
 }) {
 	const issuedAtIso =
 		data.issuedAt > 0n ? new Date(Number(data.issuedAt) * 1000).toISOString() : "—";
@@ -478,6 +529,14 @@ function ResultCard({
 				)}
 			</div>
 
+			{data.exists && (data.issuerBulletinRef || metadataFetch.kind !== "idle") && (
+				<IssuerMetadataCard
+					bulletinRef={data.issuerBulletinRef}
+					metadataHash={data.issuerMetadataHash}
+					fetchState={metadataFetch}
+				/>
+			)}
+
 			{data.exists && data.pdfCid && (
 				<AutoPdfIntegrityCard
 					data={data}
@@ -507,6 +566,118 @@ function ResultCard({
 				verifying={proofVerifying}
 				verdict={proofVerdict}
 			/>
+		</div>
+	);
+}
+
+function IssuerMetadataCard({
+	bulletinRef,
+	metadataHash,
+	fetchState,
+}: {
+	bulletinRef: string;
+	metadataHash: Hex;
+	fetchState: MetadataFetchState;
+}) {
+	const ZERO_HASH = "0x0000000000000000000000000000000000000000000000000000000000000000";
+	const hasHash = metadataHash !== ZERO_HASH;
+
+	return (
+		<div className="card space-y-4 animate-fade-in">
+			<div className="flex items-start justify-between gap-3 flex-wrap">
+				<div>
+					<span className="status-badge border border-white/[0.08] bg-white/[0.04] text-text-secondary">
+						Issuer Metadata
+					</span>
+					<h2 className="section-title mt-2">University Profile</h2>
+					<p className="text-sm text-text-secondary mt-1">
+						Optional metadata published by the issuer to Bulletin Chain and committed
+						on-chain via <code>metadataHash</code>.
+					</p>
+				</div>
+				{bulletinRef && (
+					<span className="text-xs text-text-muted font-mono">
+						{bulletinRef.includes(":") ? `Block ${bulletinRef.split(":")[0]}` : `CID ${bulletinRef.slice(0, 16)}…`}
+					</span>
+				)}
+			</div>
+
+			{fetchState.kind === "loading" && (
+				<p className="text-sm text-text-muted">Fetching metadata from Bulletin Chain…</p>
+			)}
+
+			{fetchState.kind === "found" && (
+				<div className="space-y-3">
+					<div className="flex items-center gap-2">
+						<span className="status-badge border bg-accent-green/10 text-accent-green border-accent-green/30">
+							✓ Verified on Bulletin Chain
+						</span>
+						<span className="text-xs text-text-muted">
+							keccak256 of fetched JSON matches on-chain <code>metadataHash</code>
+						</span>
+					</div>
+					<div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+						{fetchState.metadata.country && (
+							<Field label="Country" value={fetchState.metadata.country} />
+						)}
+						{fetchState.metadata.website && (
+							<div>
+								<p className="text-xs font-medium text-text-tertiary uppercase tracking-wider">
+									Website
+								</p>
+								<a
+									href={fetchState.metadata.website}
+									target="_blank"
+									rel="noreferrer"
+									className="text-sm text-accent-blue hover:underline break-all"
+								>
+									{fetchState.metadata.website}
+								</a>
+							</div>
+						)}
+						{fetchState.metadata.accreditationBody && (
+							<Field label="Accreditation body" value={fetchState.metadata.accreditationBody} />
+						)}
+						{fetchState.metadata.accreditationId && (
+							<Field label="Accreditation ID" value={fetchState.metadata.accreditationId} />
+						)}
+					</div>
+					{hasHash && (
+						<Field label="Metadata hash (keccak256)" value={metadataHash} mono />
+					)}
+				</div>
+			)}
+
+			{fetchState.kind === "not-found" && (
+				<div className="space-y-2">
+					<span className="status-badge border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
+						⚠ Not found on Bulletin Chain
+					</span>
+					<p className="text-xs text-text-muted">
+						The block may have exceeded the Bulletin Chain retention period (~256 blocks),
+						or the archive node is unavailable. The on-chain hash commitment remains.
+					</p>
+					{hasHash && (
+						<Field label="Committed metadata hash" value={metadataHash} mono />
+					)}
+				</div>
+			)}
+
+			{fetchState.kind === "error" && (
+				<div className="space-y-2">
+					<span className="status-badge border bg-accent-red/10 text-accent-red border-accent-red/30">
+						✗ Fetch error
+					</span>
+					<p className="text-xs text-text-muted">{fetchState.message}</p>
+					{hasHash && (
+						<Field label="Committed metadata hash" value={metadataHash} mono />
+					)}
+				</div>
+			)}
+
+			{fetchState.kind === "idle" && hasHash && (
+				<Field label="Committed metadata hash" value={metadataHash} mono />
+			)}
 		</div>
 	);
 }
