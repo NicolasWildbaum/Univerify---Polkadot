@@ -13,8 +13,8 @@ function readOverride(value: string | undefined): string | null {
 const generatedDeployments = {
 	evm: "0x6f364ba017935cc6207b07738cb0fb512dc7751c",
 	pvm: "0xf92b1c1001df3b23a7acc85d1267024322d12ad3",
-	univerify: "0x63de14b7bc3cc81808acc6e703eb407d09f8b2fd",
-	certificateNft: "0x254b52c70a711643fe0261305b3eb5898c14914c",
+	univerify: "0x16b745af41b9c2da7867c6b979ccb0ab35bda135",
+	certificateNft: "0x534a5c1d3763ad666d83a14894deb1a6da4896f9",
 } as const;
 
 export const deployments: {
