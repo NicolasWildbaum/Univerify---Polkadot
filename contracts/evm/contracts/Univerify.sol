@@ -82,6 +82,19 @@ contract Univerify {
 		uint32 approvalCount;
 	}
 
+	/// @dev Snapshot of the issuer profile that was live immediately before
+	///      the current Pending application round started. Used so an expired
+	///      candidacy can lazily restore the exact prior issuer record
+	///      without any storage iteration.
+	struct PendingIssuerSnapshot {
+		IssuerStatus previousStatus;
+		bytes32 metadataHash;
+		string bulletinRef;
+		string name;
+		uint64 registeredAt;
+		uint32 approvalCount;
+	}
+
 	/// @notice Constructor-only descriptor for a genesis university.
 	struct GenesisIssuer {
 		address account;
@@ -145,6 +158,13 @@ contract Univerify {
 	/// @dev Keeps storage bounded and protects against pathological names.
 	uint256 public constant MAX_NAME_LENGTH = 64;
 
+	/// @notice Fixed lifetime of an onboarding or removal-governance round.
+	/// @dev After this many seconds, a still-unresolved application or
+	///      removal proposal is treated as expired. Because contracts cannot
+	///      self-execute, expiry is enforced lazily on reads and on the next
+	///      relevant governance action.
+	uint64 public constant GOVERNANCE_VOTING_PERIOD = 7 days;
+
 	// ── State ───────────────────────────────────────────────────────────
 
 	/// @notice Minimum number of approvals from Active universities required
@@ -175,18 +195,25 @@ contract Univerify {
 	///      issuer still appears in this list with `status = Removed`.
 	address[] private _issuerList;
 
-	/// @notice Per-issuer re-application round. Starts at 0 for every address
-	///         and is incremented each time a Removed issuer re-enters the
-	///         Pending waitlist via `applyAsIssuer`. Because approval records
-	///         are keyed by `(candidate, epoch, approver)`, bumping the
-	///         epoch atomically clears the entire approval ledger of the
-	///         previous round without any storage iteration.
+	/// @notice Per-issuer application round. Starts at 0 for every address
+	///         and is incremented each time an address enters `Pending` via
+	///         `applyAsIssuer`. Because approval records are keyed by
+	///         `(candidate, epoch, approver)`, bumping the epoch atomically
+	///         clears the entire approval ledger of the previous round
+	///         without any storage iteration.
 	/// @dev    Public for UI transparency (an applicant's "this is attempt
-	///         N+1" label) and to make the re-application semantics
-	///         observable off-chain. Genesis issuers are on epoch 0; they
-	///         only acquire a non-zero epoch if they are removed and later
-	///         re-apply.
+	///         N+1" label) and to make the expiry semantics observable
+	///         off-chain. Genesis issuers remain on epoch 0 until they start
+	///         an application round through `applyAsIssuer`.
 	mapping(address => uint32) public issuerEpoch;
+
+	/// @dev Timestamp when the issuer entered the current Pending round.
+	///      Zero means "no live application".
+	mapping(address => uint64) private _pendingEnteredAt;
+
+	/// @dev Issuer profile snapshot taken immediately before the current
+	///      Pending round began. Restored if the round expires.
+	mapping(address => PendingIssuerSnapshot) private _pendingPreviousIssuer;
 
 	/// @dev Approval tracking, namespaced by `issuerEpoch[candidate]` so that
 	///      approvals from a prior round cannot bleed into a re-application.
@@ -210,7 +237,7 @@ contract Univerify {
 	///         if none. Used to enforce "at most one active removal proposal
 	///         per target" and to let the frontend discover proposals by
 	///         target without iterating history.
-	mapping(address => uint256) public openRemovalProposal;
+	mapping(address => uint256) private _openRemovalProposal;
 
 	/// @notice Certificates keyed by `certificateId`.
 	mapping(bytes32 => Certificate) public certificates;
@@ -231,7 +258,12 @@ contract Univerify {
 
 	// ── Events ──────────────────────────────────────────────────────────
 
-	event IssuerApplied(address indexed issuer, string name, bytes32 metadataHash, string bulletinRef);
+	event IssuerApplied(
+		address indexed issuer,
+		string name,
+		bytes32 metadataHash,
+		string bulletinRef
+	);
 	event IssuerApproved(address indexed approver, address indexed issuer, uint32 approvalCount);
 	event IssuerActivated(address indexed issuer);
 
@@ -319,20 +351,38 @@ contract Univerify {
 	/// @param  bulletinRef   Bulletin Chain block number where the metadata JSON was
 	///                       stored (decimal string, e.g. "12345"). Empty string if
 	///                       no Bulletin Chain upload was performed.
-	function applyAsIssuer(string calldata name, bytes32 metadataHash, string calldata bulletinRef) external {
+	function applyAsIssuer(
+		string calldata name,
+		bytes32 metadataHash,
+		string calldata bulletinRef
+	) external {
 		_validateName(name);
-		IssuerStatus prev = _issuers[msg.sender].status;
+		_expirePendingApplication(msg.sender);
+
+		Issuer storage current = _issuers[msg.sender];
+		IssuerStatus prev = current.status;
 		if (prev == IssuerStatus.Pending || prev == IssuerStatus.Active) {
 			revert IssuerAlreadyExists();
 		}
 
-		if (prev == IssuerStatus.Removed) {
-			// Re-application: bump the approval round so prior votes can't
-			// leak in, and keep the existing `_issuerList` slot so the
-			// enumeration remains append-only.
-			issuerEpoch[msg.sender] += 1;
-		} else {
-			// First-time applicant: extend the enumeration.
+		// Every Pending round gets a fresh epoch so approvals from an earlier
+		// round cannot bleed into a re-application after expiry or removal.
+		issuerEpoch[msg.sender] += 1;
+
+		_pendingPreviousIssuer[msg.sender] = PendingIssuerSnapshot({
+			previousStatus: prev,
+			metadataHash: current.metadataHash,
+			bulletinRef: current.bulletinRef,
+			name: current.name,
+			registeredAt: current.registeredAt,
+			approvalCount: current.approvalCount
+		});
+		_pendingEnteredAt[msg.sender] = uint64(block.timestamp);
+
+		if (current.account == address(0)) {
+			// First-ever applicant: extend the enumeration. Expired first-time
+			// applications keep the slot with `status = None` so future
+			// applications reuse it instead of duplicating the address.
 			_issuerList.push(msg.sender);
 		}
 
@@ -355,6 +405,7 @@ contract Univerify {
 	/// @param  candidate Address of the Pending applicant.
 	function approveIssuer(address candidate) external onlyActiveIssuer {
 		if (candidate == msg.sender) revert CannotApproveSelf();
+		_expirePendingApplication(candidate);
 
 		Issuer storage c = _issuers[candidate];
 		if (c.status != IssuerStatus.Pending) revert IssuerNotPending();
@@ -369,6 +420,7 @@ contract Univerify {
 
 		if (newCount >= approvalThreshold) {
 			c.status = IssuerStatus.Active;
+			_clearPendingApplication(candidate);
 			activeIssuerCount += 1;
 			emit IssuerActivated(candidate);
 		}
@@ -387,14 +439,13 @@ contract Univerify {
 	///         another proposer keeps the flow symmetric with admission.
 	/// @param  target Active issuer to propose for removal.
 	/// @return proposalId The new proposal id (always > 0).
-	function proposeRemoval(
-		address target
-	) external onlyActiveIssuer returns (uint256 proposalId) {
+	function proposeRemoval(address target) external onlyActiveIssuer returns (uint256 proposalId) {
 		if (target == msg.sender) revert CannotProposeSelfRemoval();
 		Issuer storage t = _issuers[target];
 		if (t.status == IssuerStatus.None) revert IssuerNotFound();
 		if (t.status != IssuerStatus.Active) revert IssuerNotActive();
-		if (openRemovalProposal[target] != 0) revert RemovalProposalAlreadyOpen();
+		_expireOpenRemovalProposal(target);
+		if (_openRemovalProposal[target] != 0) revert RemovalProposalAlreadyOpen();
 
 		proposalId = ++removalProposalCount;
 		_removalProposals[proposalId] = RemovalProposal({
@@ -405,7 +456,7 @@ contract Univerify {
 			executed: false
 		});
 		_hasVotedOnRemoval[proposalId][msg.sender] = true;
-		openRemovalProposal[target] = proposalId;
+		_openRemovalProposal[target] = proposalId;
 
 		emit RemovalProposalCreated(proposalId, target, msg.sender);
 		emit RemovalVoteCast(proposalId, msg.sender, 1);
@@ -424,6 +475,7 @@ contract Univerify {
 	///         re-tallying history would add complexity without changing
 	///         the trust model in a meaningful way.
 	function voteForRemoval(uint256 proposalId) external onlyActiveIssuer {
+		_expireRemovalProposal(proposalId);
 		RemovalProposal storage p = _removalProposals[proposalId];
 		if (p.target == address(0)) revert RemovalProposalNotFound();
 		if (p.executed) revert RemovalProposalAlreadyExecuted();
@@ -449,7 +501,7 @@ contract Univerify {
 			p.executed = true;
 			_issuers[p.target].status = IssuerStatus.Removed;
 			activeIssuerCount -= 1;
-			delete openRemovalProposal[p.target];
+			delete _openRemovalProposal[p.target];
 			emit IssuerRemoved(p.target, proposalId);
 		}
 	}
@@ -534,10 +586,7 @@ contract Univerify {
 	///         registry remains valid without any PDF, but when a holder does
 	///         attach one the public verifier can discover it from the bare
 	///         `certificateId` alone.
-	function setCertificatePdfCid(
-		bytes32 certificateId,
-		string calldata pdfCid
-	) external {
+	function setCertificatePdfCid(bytes32 certificateId, string calldata pdfCid) external {
 		if (certificateId == bytes32(0)) revert InvalidCertificateId();
 		if (bytes(pdfCid).length == 0) revert EmptyPdfCid();
 
@@ -548,9 +597,7 @@ contract Univerify {
 		if (nft == address(0)) revert NftNotConfigured();
 
 		uint256 tokenId = ICertificateNft(nft).certIdToTokenId(certificateId);
-		if (
-			tokenId == 0 || ICertificateNft(nft).ownerOf(tokenId) != msg.sender
-		) {
+		if (tokenId == 0 || ICertificateNft(nft).ownerOf(tokenId) != msg.sender) {
 			revert NotCertificateHolder();
 		}
 
@@ -585,12 +632,25 @@ contract Univerify {
 	/// @notice Full issuer profile. Returns a zeroed struct (`status = None`)
 	///         for addresses that have never applied or been seeded.
 	function getIssuer(address account) external view returns (Issuer memory) {
-		return _issuers[account];
+		Issuer memory issuer = _issuers[account];
+		if (issuer.status != IssuerStatus.Pending || !_isExpired(_pendingEnteredAt[account])) {
+			return issuer;
+		}
+
+		PendingIssuerSnapshot storage prev = _pendingPreviousIssuer[account];
+		issuer.account = account;
+		issuer.status = prev.previousStatus;
+		issuer.metadataHash = prev.metadataHash;
+		issuer.bulletinRef = prev.bulletinRef;
+		issuer.name = prev.name;
+		issuer.registeredAt = prev.registeredAt;
+		issuer.approvalCount = prev.approvalCount;
+		return issuer;
 	}
 
 	/// @notice Convenience gate for the frontend and for off-chain verifiers.
 	function isActiveIssuer(address account) external view returns (bool) {
-		return _issuers[account].status == IssuerStatus.Active;
+		return _effectiveIssuerStatus(account) == IssuerStatus.Active;
 	}
 
 	/// @notice Whether a given Active issuer has already approved a candidate
@@ -601,6 +661,7 @@ contract Univerify {
 	///         the frontend to disable an already-used approval button
 	///         without replaying events.
 	function hasApproved(address candidate, address approver) external view returns (bool) {
+		if (_effectiveIssuerStatus(candidate) != IssuerStatus.Pending) return false;
 		return _hasApproved[candidate][issuerEpoch[candidate]][approver];
 	}
 
@@ -616,24 +677,99 @@ contract Univerify {
 
 	// ── Read Helpers: Removal Governance ────────────────────────────────
 
+	/// @notice Currently-open removal proposal id for a given target, or `0`
+	///         if none exists or the previously-open proposal has expired.
+	function openRemovalProposal(address target) public view returns (uint256) {
+		uint256 proposalId = _openRemovalProposal[target];
+		if (proposalId == 0) return 0;
+		return _removalProposalExpired(proposalId) ? 0 : proposalId;
+	}
+
 	/// @notice Full proposal record by id. Unknown ids return a zeroed
 	///         struct (`target == address(0)`) which the frontend treats as
 	///         "not found".
-	function getRemovalProposal(
-		uint256 proposalId
-	) external view returns (RemovalProposal memory) {
-		return _removalProposals[proposalId];
+	function getRemovalProposal(uint256 proposalId) external view returns (RemovalProposal memory) {
+		RemovalProposal memory proposal = _removalProposals[proposalId];
+		if (proposal.target == address(0) || proposal.executed) return proposal;
+		if (_isExpired(proposal.createdAt)) {
+			return
+				RemovalProposal({
+					target: address(0),
+					proposer: address(0),
+					createdAt: 0,
+					voteCount: 0,
+					executed: false
+				});
+		}
+		return proposal;
 	}
 
 	/// @notice Whether a voter has already voted on a specific proposal.
-	function hasVotedOnRemoval(
-		uint256 proposalId,
-		address voter
-	) external view returns (bool) {
+	function hasVotedOnRemoval(uint256 proposalId, address voter) external view returns (bool) {
+		if (_removalProposalExpired(proposalId)) return false;
 		return _hasVotedOnRemoval[proposalId][voter];
 	}
 
 	// ── Internal ────────────────────────────────────────────────────────
+
+	function _effectiveIssuerStatus(address account) internal view returns (IssuerStatus) {
+		IssuerStatus status = _issuers[account].status;
+		if (status == IssuerStatus.Pending && _isExpired(_pendingEnteredAt[account])) {
+			return _pendingPreviousIssuer[account].previousStatus;
+		}
+		return status;
+	}
+
+	function _isExpired(uint64 startedAt) internal view returns (bool) {
+		return startedAt != 0 && block.timestamp >= uint256(startedAt) + GOVERNANCE_VOTING_PERIOD;
+	}
+
+	function _clearPendingApplication(address issuer) internal {
+		delete _pendingEnteredAt[issuer];
+		delete _pendingPreviousIssuer[issuer];
+	}
+
+	function _expirePendingApplication(address issuer) internal returns (bool) {
+		if (
+			_issuers[issuer].status != IssuerStatus.Pending ||
+			!_isExpired(_pendingEnteredAt[issuer])
+		) {
+			return false;
+		}
+
+		PendingIssuerSnapshot storage prev = _pendingPreviousIssuer[issuer];
+		_issuers[issuer] = Issuer({
+			account: issuer,
+			status: prev.previousStatus,
+			metadataHash: prev.metadataHash,
+			bulletinRef: prev.bulletinRef,
+			name: prev.name,
+			registeredAt: prev.registeredAt,
+			approvalCount: prev.approvalCount
+		});
+		_clearPendingApplication(issuer);
+		return true;
+	}
+
+	function _removalProposalExpired(uint256 proposalId) internal view returns (bool) {
+		RemovalProposal storage proposal = _removalProposals[proposalId];
+		return
+			proposal.target != address(0) && !proposal.executed && _isExpired(proposal.createdAt);
+	}
+
+	function _expireOpenRemovalProposal(address target) internal returns (bool) {
+		uint256 proposalId = _openRemovalProposal[target];
+		if (proposalId == 0) return false;
+		return _expireRemovalProposal(proposalId);
+	}
+
+	function _expireRemovalProposal(uint256 proposalId) internal returns (bool) {
+		if (!_removalProposalExpired(proposalId)) return false;
+		address target = _removalProposals[proposalId].target;
+		delete _openRemovalProposal[target];
+		delete _removalProposals[proposalId];
+		return true;
+	}
 
 	function _validateName(string memory name) internal pure {
 		bytes memory b = bytes(name);
