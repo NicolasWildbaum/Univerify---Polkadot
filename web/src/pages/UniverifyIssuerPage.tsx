@@ -449,25 +449,6 @@ export default function UniverifyIssuerPage() {
 		}
 	}
 
-	function copyCredentialJson(credential: VerifiableCredential) {
-		const json = JSON.stringify(credential, null, 2);
-		navigator.clipboard?.writeText(json).catch(() => {});
-	}
-
-	function downloadCredentialJson(credential: VerifiableCredential) {
-		const json = JSON.stringify(credential, null, 2);
-		const blob = new Blob([json], { type: "application/json" });
-		const url = URL.createObjectURL(blob);
-		const filename = `credential-${credential.certificateId.slice(2, 14)}.json`;
-		const a = document.createElement("a");
-		a.href = url;
-		a.download = filename;
-		document.body.appendChild(a);
-		a.click();
-		document.body.removeChild(a);
-		URL.revokeObjectURL(url);
-	}
-
 	function downloadCredentialPdf(credential: VerifiableCredential, student: Address) {
 		const bytes = buildCertificatePdfBytes({
 			credential,
@@ -486,9 +467,9 @@ export default function UniverifyIssuerPage() {
 					<h1 className="page-title text-polka-500">Issue Credential</h1>
 					<p className="page-subtitle">
 						Sign and register a new verifiable academic credential on the Univerify
-						contract. The resulting credential JSON is the artefact you give to the
-						holder — they present it to verifiers, who recompute the hash and check the
-						on-chain record.
+						contract. Issuance anchors the record on-chain, mints the student's
+						soulbound NFT, and prepares the machine-readable PDF used in the holder
+						experience and later verification.
 					</p>
 				</div>
 			</div>
@@ -710,40 +691,19 @@ export default function UniverifyIssuerPage() {
 
 							<VerifyLinkRow certificateId={tx.credential.certificateId} />
 
-							<div>
-								<div className="flex items-center justify-between mb-2">
-									<label className="label mb-0">Credential JSON</label>
-									<div className="flex gap-2">
-										<button
-											onClick={() => copyCredentialJson(tx.credential)}
-											className="btn-secondary text-xs"
-										>
-											Copy
-										</button>
-										<button
-											onClick={() => downloadCredentialJson(tx.credential)}
-											className="btn-secondary text-xs"
-										>
-											Download .json
-										</button>
-										<button
-											onClick={() =>
-												downloadCredentialPdf(
-													tx.credential,
-													tx.studentAddress,
-												)
-											}
-											className="btn-secondary text-xs"
-										>
-											Download .pdf
-										</button>
-									</div>
+							<div className="space-y-3">
+								<div className="flex flex-wrap gap-2">
+									<button
+										onClick={() =>
+											downloadCredentialPdf(tx.credential, tx.studentAddress)
+										}
+										className="btn-secondary text-xs"
+									>
+										Download .pdf
+									</button>
 								</div>
-								<pre className="rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 text-xs font-mono text-text-secondary whitespace-pre-wrap break-all overflow-x-auto">
-									{JSON.stringify(tx.credential, null, 2)}
-								</pre>
-								<p className="text-xs text-text-muted mt-2">
-									The exported PDF embeds the canonical credential payload
+								<p className="text-xs text-text-muted">
+									The generated PDF embeds the canonical credential payload
 									directly in the file, so the public verifier can later extract
 									it without OCR and recompute the same on-chain{" "}
 									<code>claimsHash</code>.
