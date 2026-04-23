@@ -81,7 +81,7 @@ async function deployWired() {
 	const genesis = [
 		{ account: alice.account.address, name: "UDELAR", metadataHash: meta },
 	];
-	const univerify = await hre.viem.deployContract("Univerify", [genesis, 1]);
+	const univerify = await hre.viem.deployContract("Univerify", [genesis]);
 	const certificateNft = await hre.viem.deployContract("CertificateNft", [
 		univerify.address,
 		univerify.address,

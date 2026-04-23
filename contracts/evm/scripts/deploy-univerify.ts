@@ -19,7 +19,6 @@ interface GenesisIssuerConfig {
 }
 
 interface GenesisConfig {
-	approvalThreshold: number;
 	issuers: GenesisIssuerConfig[];
 }
 
@@ -64,20 +63,8 @@ function loadGenesisConfig(networkName: string): GenesisConfig {
 
 	const cfg = raw as GenesisConfig;
 
-	if (!Number.isInteger(cfg.approvalThreshold) || cfg.approvalThreshold < 1) {
-		throw new Error(
-			`${file}: "approvalThreshold" must be a positive integer (got ${JSON.stringify(
-				cfg.approvalThreshold,
-			)}).`,
-		);
-	}
 	if (!Array.isArray(cfg.issuers) || cfg.issuers.length === 0) {
 		throw new Error(`${file}: "issuers" must be a non-empty array.`);
-	}
-	if (cfg.approvalThreshold > cfg.issuers.length) {
-		throw new Error(
-			`${file}: approvalThreshold (${cfg.approvalThreshold}) must not exceed issuers.length (${cfg.issuers.length}).`,
-		);
 	}
 
 	const seen = new Set<string>();
@@ -184,7 +171,7 @@ async function main() {
 
 	const config = loadGenesisConfig(networkName);
 	console.log(
-		`Loaded genesis: ${config.issuers.length} issuer(s), approvalThreshold=${config.approvalThreshold}`,
+		`Loaded genesis: ${config.issuers.length} issuer(s), approvalThreshold=ceil(n/2) (dynamic)`,
 	);
 	for (const issuer of config.issuers) {
 		console.log(`  - ${issuer.name} (${issuer.account})`);
@@ -219,7 +206,7 @@ async function main() {
 	const univerifyHash = await walletClient.deployContract({
 		abi: univerifyArtifact.abi,
 		bytecode: univerifyArtifact.bytecode as Hex,
-		args: [genesisArg, config.approvalThreshold],
+		args: [genesisArg],
 	});
 	const univerifyReceipt = await publicClient.waitForTransactionReceipt({
 		hash: univerifyHash,

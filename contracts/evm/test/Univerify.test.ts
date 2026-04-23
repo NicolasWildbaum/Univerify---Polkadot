@@ -174,7 +174,8 @@ const claimsHash = keccak256(toBytes("canonical-claims-json"));
 const claimsHash2 = keccak256(toBytes("canonical-claims-json-2"));
 
 const GENESIS_NAMES = ["UDELAR", "University of Montevideo", "University ORT"] as const;
-const DEFAULT_THRESHOLD = 2;
+// Expected threshold for the 3-issuer fixture: ceil(3/2) = 2.
+const EXPECTED_THRESHOLD_3 = 2;
 
 async function elapseGovernanceVotingPeriod(univerify: {
 	read: { GOVERNANCE_VOTING_PERIOD: () => Promise<bigint> };
@@ -202,7 +203,7 @@ async function deployWithGenesis() {
 		{ account: charlie.account.address, name: GENESIS_NAMES[2], metadataHash: metaOrt },
 	];
 
-	const univerify = await hre.viem.deployContract("Univerify", [genesis, DEFAULT_THRESHOLD]);
+	const univerify = await hre.viem.deployContract("Univerify", [genesis]);
 	const certificateNft = await hre.viem.deployContract("CertificateNft", [
 		univerify.address,
 		univerify.address,
@@ -223,7 +224,6 @@ async function deployWithGenesis() {
 		student,
 		publicClient,
 		genesis,
-		threshold: DEFAULT_THRESHOLD,
 	};
 }
 
@@ -267,9 +267,10 @@ describe("Univerify", function () {
 			expect(eventNames).to.not.include("IssuerUnsuspended");
 		});
 
-		it("stores approvalThreshold as immutable", async function () {
-			const { univerify, threshold } = await loadFixture(deployWithGenesis);
-			expect(Number(await univerify.read.approvalThreshold())).to.equal(threshold);
+		it("computes approvalThreshold as ceil(activeIssuerCount/2)", async function () {
+			const { univerify } = await loadFixture(deployWithGenesis);
+			// 3 genesis issuers → ceil(3/2) = 2.
+			expect(Number(await univerify.read.approvalThreshold())).to.equal(EXPECTED_THRESHOLD_3);
 		});
 
 		it("seeds each genesis issuer as Active with full profile", async function () {
@@ -319,45 +320,9 @@ describe("Univerify", function () {
 			}
 		});
 
-		it("reverts InvalidThreshold when threshold is zero", async function () {
-			const [, alice] = await hre.viem.getWalletClients();
-			await expectRevert(
-				() =>
-					hre.viem.deployContract("Univerify", [
-						[
-							{
-								account: alice.account.address,
-								name: "X",
-								metadataHash: metaUdelar,
-							},
-						],
-						0,
-					]),
-				"InvalidThreshold",
-			);
-		});
-
 		it("reverts InvalidGenesis when the genesis list is empty", async function () {
 			await expectRevert(
-				() => hre.viem.deployContract("Univerify", [[], 1]),
-				"InvalidGenesis",
-			);
-		});
-
-		it("reverts InvalidGenesis when threshold > genesis length", async function () {
-			const [, alice] = await hre.viem.getWalletClients();
-			await expectRevert(
-				() =>
-					hre.viem.deployContract("Univerify", [
-						[
-							{
-								account: alice.account.address,
-								name: "X",
-								metadataHash: metaUdelar,
-							},
-						],
-						2,
-					]),
+				() => hre.viem.deployContract("Univerify", [[]]),
 				"InvalidGenesis",
 			);
 		});
@@ -367,7 +332,6 @@ describe("Univerify", function () {
 				() =>
 					hre.viem.deployContract("Univerify", [
 						[{ account: ZERO_ADDRESS, name: "X", metadataHash: metaUdelar }],
-						1,
 					]),
 				"ZeroAddress",
 			);
@@ -385,7 +349,6 @@ describe("Univerify", function () {
 								metadataHash: metaUdelar,
 							},
 						],
-						1,
 					]),
 				"EmptyName",
 			);
@@ -404,7 +367,6 @@ describe("Univerify", function () {
 								metadataHash: metaUdelar,
 							},
 						],
-						1,
 					]),
 				"NameTooLong",
 			);
@@ -427,10 +389,80 @@ describe("Univerify", function () {
 								metadataHash: metaUm,
 							},
 						],
-						1,
 					]),
 				"IssuerAlreadyExists",
 			);
+		});
+	});
+
+	// ── Dynamic approvalThreshold ────────────────────────────────────
+
+	describe("dynamic approvalThreshold", function () {
+		it("returns ceil(n/2) for various active-issuer counts", async function () {
+			// Grow a federation one issuer at a time and verify the formula
+			// updates after each admission. Each applicant is approved by
+			// exactly as many active issuers as the threshold requires at
+			// that moment (no over-approving).
+			const [deployer, alice, bob, charlie, dave, eve] =
+				await hre.viem.getWalletClients();
+			const u = await hre.viem.deployContract("Univerify", [
+				[{ account: alice.account.address, name: "A", metadataHash: metaUdelar }],
+			]);
+			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
+			await u.write.setCertificateNft([nft.address], { account: deployer.account });
+
+			// 1 active issuer: ceil(1/2) = 1
+			expect(Number(await u.read.approvalThreshold())).to.equal(1);
+
+			// Admit Bob (threshold=1 → 1 approval activates) → 2 active: ceil(2/2)=1
+			await u.write.applyAsIssuer(["B", metaUm, ""], { account: bob.account });
+			await u.write.approveIssuer([bob.account.address], { account: alice.account });
+			expect(Number(await u.read.activeIssuerCount())).to.equal(2);
+			expect(Number(await u.read.approvalThreshold())).to.equal(1);
+
+			// Admit Charlie (threshold=1 → 1 approval activates) → 3 active: ceil(3/2)=2
+			await u.write.applyAsIssuer(["C", metaOrt, ""], { account: charlie.account });
+			await u.write.approveIssuer([charlie.account.address], { account: alice.account });
+			expect(Number(await u.read.activeIssuerCount())).to.equal(3);
+			expect(Number(await u.read.approvalThreshold())).to.equal(2);
+
+			// Admit Dave (threshold=2 → 2 approvals needed) → 4 active: ceil(4/2)=2
+			await u.write.applyAsIssuer(["D", metaApplicant, ""], { account: dave.account });
+			await u.write.approveIssuer([dave.account.address], { account: alice.account }); // count=1
+			await u.write.approveIssuer([dave.account.address], { account: bob.account });   // count=2 → activates
+			expect(Number(await u.read.activeIssuerCount())).to.equal(4);
+			expect(Number(await u.read.approvalThreshold())).to.equal(2);
+
+			// Admit Eve (threshold=2 → 2 approvals needed) → 5 active: ceil(5/2)=3
+			const metaEve = keccak256(toBytes("eve-metadata"));
+			await u.write.applyAsIssuer(["E", metaEve, ""], { account: eve.account });
+			await u.write.approveIssuer([eve.account.address], { account: alice.account }); // count=1
+			await u.write.approveIssuer([eve.account.address], { account: bob.account });   // count=2 → activates
+			expect(Number(await u.read.activeIssuerCount())).to.equal(5);
+			expect(Number(await u.read.approvalThreshold())).to.equal(3);
+		});
+
+		it("threshold drops after a removal, which can make the next proposal auto-execute", async function () {
+			// Start with 3 issuers: threshold=2.  Remove one → 2 issuers:
+			// threshold drops to 1.  The very next proposal executes atomically.
+			const { univerify, alice, bob, charlie } = await loadFixture(deployWithGenesis);
+
+			expect(Number(await univerify.read.approvalThreshold())).to.equal(2);
+
+			// Remove Bob (threshold=2: alice proposes + charlie votes).
+			await univerify.write.proposeRemoval([bob.account.address], { account: alice.account });
+			await univerify.write.voteForRemoval([1n], { account: charlie.account });
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(2);
+			expect(Number(await univerify.read.approvalThreshold())).to.equal(1);
+
+			// Alice proposes removal of Charlie — threshold=1, so it executes immediately.
+			await univerify.write.proposeRemoval([charlie.account.address], { account: alice.account });
+			const profile = readIssuerStruct(
+				(await univerify.read.getIssuer([charlie.account.address])) as readonly unknown[],
+			);
+			expect(profile.status).to.equal(STATUS_REMOVED);
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(1);
+			expect(Number(await univerify.read.approvalThreshold())).to.equal(1);
 		});
 	});
 
@@ -625,20 +657,18 @@ describe("Univerify", function () {
 				])) as boolean,
 			).to.equal(false);
 
-			// Bob and Charlie can approve again; on the second approval (threshold=2)
-			// Alice is promoted back to Active and activeIssuerCount is restored.
+			// After Alice's removal, 2 issuers remain (Bob + Charlie), so
+			// threshold drops to ceil(2/2)=1. Bob's single approval promotes
+			// Alice back to Active.
 			await univerify.write.approveIssuer([alice.account.address], {
 				account: bob.account,
-			});
-			await univerify.write.approveIssuer([alice.account.address], {
-				account: charlie.account,
 			});
 
 			const profile = readIssuerStruct(
 				(await univerify.read.getIssuer([alice.account.address])) as unknown,
 			);
 			expect(profile.status).to.equal(STATUS_ACTIVE);
-			expect(profile.approvalCount).to.equal(2);
+			expect(profile.approvalCount).to.equal(1);
 
 			const active = (await univerify.read.activeIssuerCount()) as number | bigint;
 			expect(Number(active)).to.equal(3);
@@ -658,15 +688,13 @@ describe("Univerify", function () {
 			}
 
 			// Round 1: remove → re-apply → re-activate.
+			// After removal: 2 active (Bob + Charlie), threshold=ceil(2/2)=1.
 			await removeAlice();
 			await univerify.write.applyAsIssuer(["UDELAR-r1", metaUdelar, ""], {
 				account: alice.account,
 			});
 			await univerify.write.approveIssuer([alice.account.address], {
 				account: bob.account,
-			});
-			await univerify.write.approveIssuer([alice.account.address], {
-				account: charlie.account,
 			});
 
 			// Round 2: remove again → re-apply again.
@@ -722,32 +750,41 @@ describe("Univerify", function () {
 		});
 
 		it("expires an unresolved re-application and restores the full previous Removed profile", async function () {
-			const { univerify, alice, bob, charlie } = await loadFixture(deployWithGenesis);
+			// Use a 4-issuer federation so that after removing Alice the
+			// remaining 3 issuers give threshold=ceil(3/2)=2 — one approval
+			// alone won't promote Alice, leaving the application truly pending
+			// until it expires.
+			const [deployer, alice, bob, charlie, dave] = await hre.viem.getWalletClients();
+			const genesis = [
+				{ account: alice.account.address, name: "UDELAR", metadataHash: metaUdelar },
+				{ account: bob.account.address, name: "B", metadataHash: metaUm },
+				{ account: charlie.account.address, name: "C", metadataHash: metaOrt },
+				{ account: dave.account.address, name: "D", metadataHash: metaApplicant },
+			];
+			const u = await hre.viem.deployContract("Univerify", [genesis]);
+			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
+			await u.write.setCertificateNft([nft.address], { account: deployer.account });
 
-			await univerify.write.proposeRemoval([alice.account.address], {
-				account: bob.account,
-			});
-			const removalId = (await univerify.read.openRemovalProposal([
-				alice.account.address,
-			])) as bigint;
-			await univerify.write.voteForRemoval([removalId], { account: charlie.account });
+			// Remove Alice (4 active, threshold=2: Bob proposes + Charlie votes).
+			await u.write.proposeRemoval([alice.account.address], { account: bob.account });
+			await u.write.voteForRemoval([1n], { account: charlie.account });
 
 			const removedBefore = readIssuerStruct(
-				(await univerify.read.getIssuer([alice.account.address])) as unknown,
+				(await u.read.getIssuer([alice.account.address])) as unknown,
 			);
 			expect(removedBefore.status).to.equal(STATUS_REMOVED);
 
-			await univerify.write.applyAsIssuer(["UDELAR-temp", metaApplicant, "cid-temp"], {
+			// Alice re-applies. Threshold is now ceil(3/2)=2.
+			// Bob approves (count=1 < 2) — not yet active.
+			await u.write.applyAsIssuer(["UDELAR-temp", metaApplicant, "cid-temp"], {
 				account: alice.account,
 			});
-			await univerify.write.approveIssuer([alice.account.address], {
-				account: bob.account,
-			});
+			await u.write.approveIssuer([alice.account.address], { account: bob.account });
 
-			await elapseGovernanceVotingPeriod(univerify);
+			await elapseGovernanceVotingPeriod(u);
 
 			const restored = readIssuerStruct(
-				(await univerify.read.getIssuer([alice.account.address])) as unknown,
+				(await u.read.getIssuer([alice.account.address])) as unknown,
 			);
 			expect(restored.status).to.equal(STATUS_REMOVED);
 			expect(restored.name).to.equal(removedBefore.name);
@@ -756,7 +793,7 @@ describe("Univerify", function () {
 			expect(restored.approvalCount).to.equal(removedBefore.approvalCount);
 			expect(restored.registeredAt).to.equal(removedBefore.registeredAt);
 			expect(
-				await univerify.read.hasApproved([alice.account.address, bob.account.address]),
+				await u.read.hasApproved([alice.account.address, bob.account.address]),
 			).to.equal(false);
 		});
 
@@ -838,7 +875,7 @@ describe("Univerify", function () {
 				(await univerify.read.getIssuer([applicant.account.address])) as readonly unknown[],
 			);
 			expect(profile.status).to.equal(STATUS_ACTIVE);
-			expect(profile.approvalCount).to.equal(DEFAULT_THRESHOLD);
+			expect(profile.approvalCount).to.equal(EXPECTED_THRESHOLD_3);
 			expect(await univerify.read.isActiveIssuer([applicant.account.address])).to.equal(true);
 
 			// activeIssuerCount grew by one (from 3 genesis to 4).
@@ -1148,15 +1185,15 @@ describe("Univerify", function () {
 			).to.equal(2n);
 		});
 
-		it("executes immediately when threshold is 1 (single-genesis federation)", async function () {
+		it("executes immediately when threshold is 1 (two-issuer federation)", async function () {
 			const [, alice, bob, charlie] = await hre.viem.getWalletClients();
 
-			// Federation of 2 where threshold is 1 — a single vote is enough.
+			// 2-issuer federation: ceil(2/2)=1, so a single proposer's vote executes removal.
 			const genesis = [
 				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
 				{ account: bob.account.address, name: "B", metadataHash: metaUm },
 			];
-			const u = await hre.viem.deployContract("Univerify", [genesis, 1]);
+			const u = await hre.viem.deployContract("Univerify", [genesis]);
 			// Wire a dummy NFT so the deployment is complete — not needed for this
 			// test, but keeps the fixture symmetric with `deployWithGenesis`.
 			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
@@ -1212,7 +1249,7 @@ describe("Univerify", function () {
 			const p = readRemovalProposal(
 				(await univerify.read.getRemovalProposal([proposalId])) as readonly unknown[],
 			);
-			expect(p.voteCount).to.equal(DEFAULT_THRESHOLD);
+			expect(p.voteCount).to.equal(EXPECTED_THRESHOLD_3);
 			expect(p.executed).to.equal(true);
 
 			const profile = readIssuerStruct(
@@ -1231,7 +1268,7 @@ describe("Univerify", function () {
 				"RemovalVoteCast",
 			);
 			expect(voteLogs).to.have.lengthOf(1);
-			expect(Number(voteLogs[0].args.voteCount)).to.equal(DEFAULT_THRESHOLD);
+			expect(Number(voteLogs[0].args.voteCount)).to.equal(EXPECTED_THRESHOLD_3);
 
 			const removedLogs = parseLogs<RemovalExecutedArgs>(
 				univerify.abi as Abi,
@@ -1285,8 +1322,9 @@ describe("Univerify", function () {
 		});
 
 		it("reverts CannotVoteOnOwnRemoval when the target tries to vote", async function () {
-			// 4-issuer federation (threshold 2) so charlie isn't enough on his
-			// own to execute before alice gets a chance to attempt voting.
+			// 4-issuer federation: ceil(4/2)=2, so the proposer's single vote
+			// does not execute removal — alice still gets a chance to vote on
+			// her own proposal and hit CannotVoteOnOwnRemoval.
 			const [deployer, alice, bob, charlie, dave] = await hre.viem.getWalletClients();
 			const genesis = [
 				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
@@ -1294,7 +1332,7 @@ describe("Univerify", function () {
 				{ account: charlie.account.address, name: "C", metadataHash: metaOrt },
 				{ account: dave.account.address, name: "D", metadataHash: metaApplicant },
 			];
-			const u = await hre.viem.deployContract("Univerify", [genesis, 3]);
+			const u = await hre.viem.deployContract("Univerify", [genesis]);
 			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
 			await u.write.setCertificateNft([nft.address], { account: deployer.account });
 
@@ -1309,17 +1347,18 @@ describe("Univerify", function () {
 		});
 
 		it("reverts AlreadyVotedForRemoval on duplicate vote from the same voter", async function () {
-			// 4-issuer federation with threshold 3 so a second vote doesn't
-			// immediately execute and the third voter gets to attempt a
-			// duplicate.
-			const [deployer, alice, bob, charlie, dave] = await hre.viem.getWalletClients();
+			// 5-issuer federation: ceil(5/2)=3, so two votes don't execute and
+			// a voter can attempt a duplicate on the still-open proposal.
+			const [deployer, alice, bob, charlie, dave, eve] = await hre.viem.getWalletClients();
+			const metaEve = keccak256(toBytes("eve-metadata"));
 			const genesis = [
 				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
 				{ account: bob.account.address, name: "B", metadataHash: metaUm },
 				{ account: charlie.account.address, name: "C", metadataHash: metaOrt },
 				{ account: dave.account.address, name: "D", metadataHash: metaApplicant },
+				{ account: eve.account.address, name: "E", metadataHash: metaEve },
 			];
-			const u = await hre.viem.deployContract("Univerify", [genesis, 3]);
+			const u = await hre.viem.deployContract("Univerify", [genesis]);
 			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
 			await u.write.setCertificateNft([nft.address], { account: deployer.account });
 
@@ -1335,8 +1374,8 @@ describe("Univerify", function () {
 		});
 
 		it("reverts RemovalProposalAlreadyExecuted after execution", async function () {
-			// 4-issuer federation, threshold 2, so we execute and a fourth issuer
-			// then tries to pile on a late vote.
+			// 4-issuer federation: ceil(4/2)=2, proposal executes on the second
+			// vote and a fourth issuer then tries to pile on a late vote.
 			const [deployer, alice, bob, charlie, dave] = await hre.viem.getWalletClients();
 			const genesis = [
 				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
@@ -1344,7 +1383,7 @@ describe("Univerify", function () {
 				{ account: charlie.account.address, name: "C", metadataHash: metaOrt },
 				{ account: dave.account.address, name: "D", metadataHash: metaApplicant },
 			];
-			const u = await hre.viem.deployContract("Univerify", [genesis, 2]);
+			const u = await hre.viem.deployContract("Univerify", [genesis]);
 			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
 			await u.write.setCertificateNft([nft.address], { account: deployer.account });
 
@@ -1364,39 +1403,26 @@ describe("Univerify", function () {
 				await loadFixture(deployWithGenesis);
 			expect(Number(await univerify.read.activeIssuerCount())).to.equal(genesis.length);
 
-			// Remove bob.
+			// Remove Bob: 3 active issuers → threshold ceil(3/2)=2.
+			// Alice proposes (vote=1), Charlie votes (vote=2 ≥ 2) → executes.
 			await univerify.write.proposeRemoval([bob.account.address], {
 				account: alice.account,
 			});
 			await univerify.write.voteForRemoval([1n], { account: charlie.account });
 			expect(Number(await univerify.read.activeIssuerCount())).to.equal(genesis.length - 1);
 
-			// Now only alice + charlie are active. threshold is 2. They can
-			// still remove each other by unanimity — alice proposes charlie,
-			// charlie can't vote on own removal, but proposer + alice's vote
-			// is already 1. We need a second active voter. With only 2 active
-			// issuers, removal is possible only if both agree (majority).
-			// Here the proposer is already one of the two, so no second
-			// voter exists other than the target. Test that the proposal
-			// stays open (and can't be voted on because nobody else can
-			// contribute).
+			// Now only Alice + Charlie are active. Dynamic threshold drops to
+			// ceil(2/2)=1, so a single proposer's vote executes removal immediately.
+			// Alice proposes Charlie's removal — it executes in the same transaction.
 			await univerify.write.proposeRemoval([charlie.account.address], {
 				account: alice.account,
 			});
-			const p = readRemovalProposal(
-				(await univerify.read.getRemovalProposal([2n])) as readonly unknown[],
-			);
-			expect(p.executed).to.equal(false);
-			expect(p.voteCount).to.equal(1);
+			expect(Number(await univerify.read.activeIssuerCount())).to.equal(genesis.length - 2);
 
-			// Charlie can't vote on own removal. Stalemate.
-			await expectRevert(
-				() =>
-					univerify.write.voteForRemoval([2n], {
-						account: charlie.account,
-					}),
-				"CannotVoteOnOwnRemoval",
+			const profile = readIssuerStruct(
+				(await univerify.read.getIssuer([charlie.account.address])) as readonly unknown[],
 			);
+			expect(profile.status).to.equal(STATUS_REMOVED);
 		});
 	});
 
@@ -1580,7 +1606,7 @@ describe("Univerify", function () {
 					metadataHash: metaUdelar,
 				},
 			];
-			const univerify = await hre.viem.deployContract("Univerify", [genesis, 1]);
+			const univerify = await hre.viem.deployContract("Univerify", [genesis]);
 			await expectRevert(
 				() =>
 					univerify.write.issueCertificate(
@@ -1607,7 +1633,7 @@ describe("Univerify", function () {
 			const genesis = [
 				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
 			];
-			const univerify = await hre.viem.deployContract("Univerify", [genesis, 1]);
+			const univerify = await hre.viem.deployContract("Univerify", [genesis]);
 			await expectRevert(
 				() =>
 					univerify.write.setCertificateNft([ZERO_ADDRESS], {
@@ -1623,8 +1649,8 @@ describe("Univerify", function () {
 			const genesis = [
 				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
 			];
-			const uA = await hre.viem.deployContract("Univerify", [genesis, 1]);
-			const uB = await hre.viem.deployContract("Univerify", [genesis, 1]);
+			const uA = await hre.viem.deployContract("Univerify", [genesis]);
+			const uB = await hre.viem.deployContract("Univerify", [genesis]);
 			const nftForA = await hre.viem.deployContract("CertificateNft", [
 				uA.address,
 				uA.address,
@@ -1645,7 +1671,7 @@ describe("Univerify", function () {
 				{ account: alice.account.address, name: "A", metadataHash: metaUdelar },
 				{ account: bob.account.address, name: "B", metadataHash: metaUm },
 			];
-			const u = await hre.viem.deployContract("Univerify", [genesis, 2]);
+			const u = await hre.viem.deployContract("Univerify", [genesis]);
 			const nft = await hre.viem.deployContract("CertificateNft", [u.address, u.address]);
 			// `stranger` is neither a genesis issuer nor the deployer.
 			await u.write.setCertificateNft([nft.address], { account: stranger.account });
