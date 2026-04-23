@@ -76,13 +76,14 @@ export const evmDevAccounts = [
 		// Dorothy in Moonbeam dev-account naming. Used in the Governance UI
 		// to demonstrate the `applyAsIssuer` → `approveIssuer` flow without
 		// having to touch the genesis-active issuer set.
-		name: "Dave",
+		name: "Polythecnical University of Valencia",
 		account: privateKeyToAccount(
 			"0x39539ab1876910bbf3a223d84a29e28f1cb4e2e456503e7e91ed39b2e7223d68",
 		),
 	},
 	{
-		// Ethan in Moonbeam dev-account naming. Same purpose as Dave.
+		// Ethan in Moonbeam dev-account naming. Same purpose as the
+		// Polythecnical University of Valencia demo account above.
 		name: "Eve",
 		account: privateKeyToAccount(
 			"0x7dce9bc8babb68fec1409be38c8e1a52650206a7ed90ff956ae8a6d15eeaaef4",
