@@ -127,7 +127,6 @@ contract Univerify {
 	error CannotApproveSelf();
 	error AlreadyApproved();
 
-	error InvalidThreshold();
 	error InvalidGenesis();
 
 	// Removal-governance errors
@@ -166,18 +165,6 @@ contract Univerify {
 	uint64 public constant GOVERNANCE_VOTING_PERIOD = 7 days;
 
 	// ── State ───────────────────────────────────────────────────────────
-
-	/// @notice Minimum number of approvals from Active universities required
-	///         to promote a Pending applicant to Active. The same threshold
-	///         also governs removal: a removal proposal executes once its
-	///         vote count reaches `approvalThreshold` votes from currently
-	///         Active issuers. Set once at deploy.
-	/// @dev    A single threshold for both admission and removal keeps the
-	///         federation trust level symmetric. Trade-off: if the number of
-	///         Active issuers ever drops below `approvalThreshold`, both
-	///         paths stall and governance is degenerate. MVP accepts this as
-	///         a redeploy condition rather than encoding a dynamic majority.
-	uint32 public immutable approvalThreshold;
 
 	/// @notice Count of currently Active issuers. Incremented when a Pending
 	///         applicant is promoted, decremented when an Active issuer is
@@ -300,17 +287,8 @@ contract Univerify {
 	/// @notice Bootstrap the registry with a set of genesis universities that
 	///         are Active from block zero.
 	/// @param  genesis   Non-empty list of genesis universities.
-	/// @param  threshold Number of Active-issuer approvals required to promote
-	///                   a future Pending applicant to Active, and also the
-	///                   number of Active-issuer votes required to remove an
-	///                   Active issuer. Must satisfy
-	///                   `1 <= threshold <= genesis.length` so that at least
-	///                   one onboarding path exists from day one.
-	constructor(GenesisIssuer[] memory genesis, uint32 threshold) {
-		if (threshold == 0) revert InvalidThreshold();
-		if (genesis.length == 0 || threshold > genesis.length) revert InvalidGenesis();
-
-		approvalThreshold = threshold;
+	constructor(GenesisIssuer[] memory genesis) {
+		if (genesis.length == 0) revert InvalidGenesis();
 
 		for (uint256 i = 0; i < genesis.length; i++) {
 			GenesisIssuer memory g = genesis[i];
@@ -418,7 +396,7 @@ contract Univerify {
 
 		emit IssuerApproved(msg.sender, candidate, newCount);
 
-		if (newCount >= approvalThreshold) {
+		if (newCount >= approvalThreshold()) {
 			c.status = IssuerStatus.Active;
 			_clearPendingApplication(candidate);
 			activeIssuerCount += 1;
@@ -497,7 +475,7 @@ contract Univerify {
 	///      `voteForRemoval`.
 	function _maybeExecuteRemoval(uint256 proposalId) private {
 		RemovalProposal storage p = _removalProposals[proposalId];
-		if (p.voteCount >= approvalThreshold) {
+		if (p.voteCount >= approvalThreshold()) {
 			p.executed = true;
 			_issuers[p.target].status = IssuerStatus.Removed;
 			activeIssuerCount -= 1;
@@ -628,6 +606,16 @@ contract Univerify {
 	}
 
 	// ── Read Helpers ────────────────────────────────────────────────────
+
+	/// @notice Minimum approvals required to promote a Pending applicant to
+	///         Active, and to execute a removal proposal. Computed as
+	///         ceil(activeIssuerCount / 2), ensuring a strict majority of the
+	///         current federation must agree. Returns 1 when no issuers are
+	///         active (bootstrap edge case).
+	function approvalThreshold() public view returns (uint32) {
+		uint32 n = activeIssuerCount;
+		return n == 0 ? 1 : (n + 1) / 2;
+	}
 
 	/// @notice Full issuer profile. Returns a zeroed struct (`status = None`)
 	///         for addresses that have never applied or been seeded.
