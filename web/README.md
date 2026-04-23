@@ -20,7 +20,7 @@ React frontend for **Univerify** plus the original template pages.
 - `src/config/univerify.ts` — ABI + `IssuerStatus` mirror (must stay in sync with the contract).
 - `src/utils/contractErrors.ts` — custom-error parser and user-facing hints.
 
-Template pages (Home, Pallet / EVM / PVM Proof of Existence, Statements, Accounts) remain available for reference.
+Template pages (Home and Accounts) remain available for reference.
 
 ## Local Development
 

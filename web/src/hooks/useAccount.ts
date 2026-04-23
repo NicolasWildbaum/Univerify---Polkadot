@@ -39,7 +39,7 @@ const devPaths = ["//Alice", "//Bob", "//Charlie"];
 /**
  * Get the raw sr25519 keypair for a dev account by index.
  * Returns publicKey and sign function for use outside of PAPI transactions
- * (e.g., signing Statement Store statements).
+ * for app-specific wallet signing flows.
  */
 export function getDevKeypair(index: number): {
 	publicKey: Uint8Array;

@@ -20,7 +20,6 @@ export default function App() {
 			enabled: pallets.revive === true,
 		},
 		{ path: "/verify", label: "Verify", enabled: true },
-		{ path: "/statements", label: "Statements", enabled: true },
 		{ path: "/accounts", label: "Accounts", enabled: true },
 	];
 
