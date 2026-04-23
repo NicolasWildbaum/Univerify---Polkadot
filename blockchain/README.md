@@ -1,34 +1,52 @@
 # Blockchain
 
-A Polkadot SDK parachain built with FRAME and Cumulus, compatible with `polkadot-omni-node`.
+This directory contains the chain-side part of the project: a Cumulus parachain runtime, the reference Proof-of-Existence pallet, generated chain specs, and the Zombienet topology used by the local full-stack scripts.
 
-## Directory Guide
+The runtime is not a standalone node implementation. The repo expects external Polkadot SDK binaries such as `polkadot-omni-node`, `polkadot`, and `eth-rpc`, either downloaded into `./bin/` by [`../scripts/download-sdk-binaries.sh`](../scripts/download-sdk-binaries.sh) or provided by Docker.
 
-| Path | What it contains |
+## Directory Map
+
+| Path | Purpose |
 | --- | --- |
-| [`pallets/template/`](pallets/template/) | The Proof of Existence FRAME pallet |
-| [`runtime/`](runtime/) | The parachain runtime built on `polkadot-sdk stable2512-3` |
-| [`chain_spec.json`](chain_spec.json) | Generated local chain spec used by the dev scripts and some Docker flows |
-| [`Dockerfile`](Dockerfile) | Lightweight runtime image that packages a pre-generated chain spec |
-| [`zombienet.toml`](zombienet.toml) | Example relay-backed local topology |
+| [`pallets/template/`](pallets/template/) | Reference FRAME pallet for 32-byte Proof-of-Existence claims |
+| [`runtime/`](runtime/) | Parachain runtime that hosts the pallet, `pallet-revive`, and Statement Store runtime APIs |
+| [`chain_spec.json`](chain_spec.json) | Generated local chain spec used by scripts and Docker |
+| [`zombienet.toml`](zombienet.toml) | Relay-backed local topology for Statement Store-ready runs |
+| [`Dockerfile`](Dockerfile) | Image used to package the runtime/chain spec for lightweight chain startup |
+
+## Runtime Responsibilities
+
+- Hosts the template pallet under `TemplatePallet`.
+- Exposes `pallet-revive`, which is what the local `eth-rpc` adapter targets for EVM-compatible execution.
+- Includes Statement Store runtime support used by the CLI and smoke tests.
+- Produces the WASM runtime that `polkadot-omni-node` boots with the generated chain spec.
+
+## Development Modes
+
+| Mode | Command | When to use it |
+| --- | --- | --- |
+| Solo node | [`../scripts/start-dev.sh`](../scripts/start-dev.sh) | Fastest pallet/runtime loop. No Statement Store RPCs on this path. |
+| Relay-backed network | [`../scripts/start-local.sh`](../scripts/start-local.sh) | Runtime validation against a local relay + parachain topology. |
+| Full stack | [`../scripts/start-all.sh`](../scripts/start-all.sh) | Runtime + contracts + `eth-rpc` + frontend in one flow. |
 
 ## Common Commands
 
 ```bash
-# Build the runtime
+# Build runtime
 cargo build -p stack-template-runtime --release
 
-# Pallet unit tests
+# Pallet tests
 cargo test -p pallet-template
 
-# All workspace tests including benchmarks
+# Runtime tests
+cargo test -p stack-template-runtime
+
+# Workspace tests with benchmarks enabled
 SKIP_PALLET_REVIVE_FIXTURES=1 cargo test --workspace --features runtime-benchmarks
 ```
 
-## Running Locally
+## Notes
 
-- [`../scripts/start-dev.sh`](../scripts/start-dev.sh) — Fastest solo-node runtime/pallet loop
-- [`../scripts/start-local.sh`](../scripts/start-local.sh) — Relay-backed Zombienet network
-- [`../scripts/start-all.sh`](../scripts/start-all.sh) — Full stack: relay chain + contracts + frontend
-
-On `polkadot-sdk stable2512-3`, the solo-node dev path does not expose Statement Store RPCs. Use the relay-backed scripts when you need Statement Store locally.
+- `chain_spec.json` is generated output. Rebuild it through the scripts instead of editing it manually.
+- If you need Statement Store locally, use the relay-backed path, not `start-dev.sh`.
+- The current product path depends on this runtime because Univerify is deployed as Solidity on top of `pallet-revive`, not as a standalone Ethereum chain.
