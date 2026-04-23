@@ -1,30 +1,43 @@
 # Web
 
-React frontend for **Univerify** plus the original template pages.
+This is the React frontend for Univerify. It is the main user-facing surface of the repository and focuses on the product contracts, not on the older Proof-of-Existence demos.
 
-## Stack
+## What The App Does
 
-- React 18 + Vite + TypeScript + Tailwind.
-- [viem](https://viem.sh/) for EVM reads through `eth-rpc`.
-- `pallet_revive::call` for writes, signed by the connected Polkadot wallet (`src/account/reviveCall.ts`), so every contract write is a Substrate extrinsic.
-- Every write is pre-flighted with `publicClient.simulateContract` so custom-error names (`CannotProposeSelfRemoval`, `IssuerAlreadyExists`, ...) surface instead of the opaque `Revive.ContractReverted`.
-- [PAPI](https://papi.how/) for pallet-side reads.
-- Zustand for state.
+Current routes map to the product workflow:
 
-## Univerify pages
+| Route | Purpose |
+| --- | --- |
+| `/` | Overview and entry point |
+| `/univerify` | Issuer-side certificate issuance and revocation flow |
+| `/governance` | Issuer application, approval, and removal governance |
+| `/my-certificates` | Student wallet view of owned certificate NFTs |
+| `/verify` | Public integrity verification by presented credential data |
+| `/verify/cert/:certificateId` | Public certificate lookup / shareable verification page |
+| `/accounts` | Wallet and chain-account utilities |
 
-- `src/pages/GovernancePage.tsx` — apply / re-apply (Removed → Pending via new `issuerEpoch`), approve, propose removal, vote. Accepts both SS58 and 0x addresses and converts to H160 internally.
-- `src/pages/UniverifyIssuerPage.tsx` — issue / revoke certificates.
-- `src/pages/PublicVerifyPage.tsx` — presentation-based verification.
-- `src/pages/MyCertificatesPage.tsx` — student view via soulbound NFT enumeration.
-- `src/config/univerify.ts` — ABI + `IssuerStatus` mirror (must stay in sync with the contract).
-- `src/utils/contractErrors.ts` — custom-error parser and user-facing hints.
+The app does not currently expose the template pallet or PoE demo contract flows as first-class pages.
 
-Template pages (Home and Accounts) remain available for reference.
+## Data Flow
+
+- Reads contract state with `viem`.
+- Sends contract writes through `pallet_revive::call`, signed by the connected Polkadot wallet.
+- Uses `publicClient.simulateContract` before writes so custom Solidity errors can be surfaced cleanly.
+- Uses PAPI for chain metadata and pallet availability checks.
+- Stores app/session state with Zustand.
+
+Important files:
+
+| Path | Role |
+| --- | --- |
+| [`src/main.tsx`](src/main.tsx) | Route registration |
+| [`src/App.tsx`](src/App.tsx) | Shell, navigation, connection state |
+| [`src/account/reviveCall.ts`](src/account/reviveCall.ts) | Signed contract writes via the chain wallet |
+| [`src/config/univerify.ts`](src/config/univerify.ts) | ABI and mirrored contract enums/types |
+| [`src/config/deployments.ts`](src/config/deployments.ts) | Generated addresses from deploy scripts |
+| [`src/utils/contractErrors.ts`](src/utils/contractErrors.ts) | Solidity custom-error decoding for UX |
 
 ## Local Development
-
-Run the frontend directly:
 
 ```bash
 cd web
@@ -32,51 +45,45 @@ npm install
 npm run dev
 ```
 
-Or, from the repo root, if the chain is already running and you want the scripted dev flow:
+From the repo root you can also use:
 
 ```bash
 ./scripts/start-frontend.sh
 ```
 
-## Endpoint Configuration
+That script will refresh PAPI descriptors if a local node is already running.
 
-The app uses configurable Substrate WebSocket and Ethereum JSON-RPC endpoints.
+## Environment
 
-For hosted builds:
+Copy the example file when you need hosted or non-default endpoints:
 
 ```bash
-cp web/.env.example web/.env.local
+cp .env.example .env.local
 ```
 
-Set:
+Main variables:
 
 - `VITE_WS_URL`
 - `VITE_ETH_RPC_URL`
+- `VITE_EVM_CONTRACT_ADDRESS`
+- `VITE_PVM_CONTRACT_ADDRESS`
+- `VITE_UNIVERIFY_CONTRACT_ADDRESS`
+- `VITE_CERTIFICATE_NFT_ADDRESS`
 
-For local scripted development, [`../scripts/start-all.sh`](../scripts/start-all.sh) and [`../scripts/start-frontend.sh`](../scripts/start-frontend.sh) export:
+Local scripts usually export `VITE_LOCAL_WS_URL` and `VITE_LOCAL_ETH_RPC_URL` so the frontend follows the active local stack automatically.
 
-- `VITE_LOCAL_WS_URL`
-- `VITE_LOCAL_ETH_RPC_URL`
-
-That keeps the browser aligned with the active local stack ports.
-
-## PAPI Descriptors
-
-Generated descriptors live in [`.papi/`](.papi/).
-
-Useful commands:
+## Commands
 
 ```bash
-cd web
 npm run update-types
 npm run codegen
-npm run build
 npm run lint
+npm run build
 npm run fmt
 ```
 
-## Deployment Data
+## Notes
 
-The frontend keeps [`src/config/deployments.ts`](src/config/deployments.ts) checked in as a stub so a fresh clone still works. Contract deploy scripts update that file automatically after successful deployment.
-
-See [`../contracts/README.md`](../contracts/README.md) for contract deployment flows and [`../docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md) for hosted frontend deployment options.
+- Generated PAPI descriptors live in [`.papi/`](.papi/).
+- `src/config/deployments.ts` is generated by contract deploy scripts but remains checked in with fallback values for fresh clones.
+- The current product experience depends on the EVM-compatible Univerify contracts, even though the underlying wallet/signing flow remains Polkadot-native.

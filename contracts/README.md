@@ -1,102 +1,116 @@
 # Contracts
 
-This directory hosts the Solidity backend. The **Univerify product contracts** live in [`evm/contracts/Univerify.sol`](evm/contracts/Univerify.sol) and [`evm/contracts/CertificateNft.sol`](evm/contracts/CertificateNft.sol); see [`../BACKEND_DESIGN.md`](../BACKEND_DESIGN.md) for the full spec.
+This directory contains two different contract tracks:
 
-The `pvm/` project and the `ProofOfExistence.sol` files are **template leftovers** kept for reference — they compile but are not part of Univerify.
+- the actual Univerify product contracts in [`evm/`](evm/),
+- the older Proof-of-Existence demo contracts in [`evm/`](evm/) and [`pvm/`](pvm/).
 
-## Univerify
+The distinction matters: the frontend is built around Univerify, while the CLI and some scripts still exercise the PoE demos for reference and testing.
 
-- Registry + federated governance (no owner): `evm/contracts/Univerify.sol`
-- Soulbound ERC-721: `evm/contracts/CertificateNft.sol`
-- Tests: `evm/test/Univerify.test.ts`, `evm/test/CertificateNft.test.ts`
-- Deploy (both + wiring, one script): `evm/scripts/deploy-univerify.ts`
+## Product Contracts
 
-```bash
-cd contracts/evm
-npm install
-npx hardhat compile
-npx hardhat test
-npm run deploy:local     # local dev chain via eth-rpc
-npm run deploy:testnet   # Polkadot Hub TestNet (Paseo)
-```
+| Contract | Role |
+| --- | --- |
+| [`evm/contracts/Univerify.sol`](evm/contracts/Univerify.sol) | Federated issuer registry, issuer governance, certificate issuance/revocation, public verification data |
+| [`evm/contracts/CertificateNft.sol`](evm/contracts/CertificateNft.sol) | Soulbound ERC-721 receipt minted to the student wallet on issuance |
 
-## Template projects (reference only)
+Supporting files:
 
-| Project | Path | Toolchain | VM backend |
-| --- | --- | --- | --- |
-| EVM | [`evm/`](evm/) | Hardhat + solc + viem | REVM |
-| PVM | [`pvm/`](pvm/) | Hardhat + `@parity/resolc` + viem | PolkaVM |
+- design spec: [`../BACKEND_DESIGN.md`](../BACKEND_DESIGN.md)
+- deployment script: [`evm/scripts/deploy-univerify.ts`](evm/scripts/deploy-univerify.ts)
+- tests: [`evm/test/Univerify.test.ts`](evm/test/Univerify.test.ts), [`evm/test/CertificateNft.test.ts`](evm/test/CertificateNft.test.ts)
+- genesis issuer configs: [`evm/config/`](evm/config/)
 
-Each includes its own `ProofOfExistence.sol` entrypoint:
+`deploy-univerify.ts` deploys both contracts, wires the NFT into the registry, and updates:
 
-- [`evm/contracts/ProofOfExistence.sol`](evm/contracts/ProofOfExistence.sol)
-- [`pvm/contracts/ProofOfExistence.sol`](pvm/contracts/ProofOfExistence.sol)
+- `deployments.json`
+- [`../web/src/config/deployments.ts`](../web/src/config/deployments.ts)
 
-Both projects target either:
+## Reference Contracts
 
-- The local dev chain through `eth-rpc`
-- Polkadot Hub TestNet (`420420417`)
+| Contract | Path | VM |
+| --- | --- | --- |
+| Proof-of-Existence demo (EVM) | [`evm/contracts/ProofOfExistence.sol`](evm/contracts/ProofOfExistence.sol) | REVM via `pallet-revive` |
+| Proof-of-Existence demo (PVM) | [`pvm/contracts/ProofOfExistence.sol`](pvm/contracts/ProofOfExistence.sol) | PolkaVM via `resolc` |
 
-## Local Deployment
+These contracts are still useful for:
 
-From the repo root, the recommended full local path is:
+- comparing FRAME vs EVM vs PVM implementations of the same idea,
+- exercising the CLI `contract` and `prove --contract` flows,
+- smoke-testing the local stack.
+
+## Local Flows
+
+### Full stack
+
+From the repo root:
 
 ```bash
 ./scripts/start-all.sh
 ```
 
-Manual path against an already running local node, also from the repo root:
+This deploys:
+
+- EVM `ProofOfExistence`
+- PVM `ProofOfExistence`
+- `Univerify`
+- `CertificateNft`
+
+### Manual local deployment against a running chain
 
 ```bash
-# Terminal 1
-./scripts/start-dev.sh
+# Product contracts
+cd contracts/evm
+npm install
+npx hardhat compile
+npm run deploy:univerify:local
 
-# Terminal 2
-eth-rpc --node-rpc-url "${SUBSTRATE_RPC_WS:-ws://127.0.0.1:9944}" --rpc-port "${STACK_ETH_RPC_PORT:-8545}" --rpc-cors all
-
-# Terminal 3
-cd contracts/evm && npm install && npm run deploy:local
-cd contracts/pvm && npm install && npm run deploy:local
+# Reference demos
+npm run deploy:local
+cd ../pvm
+npm install
+npx hardhat compile
+npm run deploy:local
 ```
 
-## Testnet Deployment
+The local chain must already expose `eth-rpc`, typically via [`../scripts/start-all.sh`](../scripts/start-all.sh) or the Docker setup in the repo root.
 
-From the repo root:
+## Testnet Flows
+
+For the product path:
 
 ```bash
-cd contracts/evm && npx hardhat vars set PRIVATE_KEY
-cd contracts/pvm && npx hardhat vars set PRIVATE_KEY
+cd contracts/evm
+npx hardhat vars set PRIVATE_KEY
+npm run deploy:univerify:testnet
+```
 
+For the reference PoE demos:
+
+```bash
 ./scripts/deploy-paseo.sh
 ```
 
-You can also deploy each project directly with `npm run deploy:testnet`.
-
-## Shared Deployment Outputs
-
-The deploy scripts update:
-
-- `deployments.json` in the repo root for CLI usage
-- [`../web/src/config/deployments.ts`](../web/src/config/deployments.ts) for the frontend
+`deploy-paseo.sh` deploys only the demo `ProofOfExistence` contracts. It does not deploy Univerify.
 
 ## Common Commands
 
-From the repo root:
-
 ```bash
-# EVM
 cd contracts/evm
 npm install
 npx hardhat compile
 npx hardhat test
 npm run fmt
 
-# PVM
-cd contracts/pvm
+cd ../pvm
 npm install
 npx hardhat compile
 npx hardhat test
 npm run fmt
 ```
 
-See [`../scripts/README.md`](../scripts/README.md) for the local stack scripts and [`../docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md) for hosted deployment details.
+## Notes
+
+- The `pvm/` project is reference infrastructure, not the current product path.
+- The frontend consumes `univerify` and `certificateNft` addresses when available; the CLI contract commands consume the demo `evm` and `pvm` addresses.
+- All deploy scripts preserve a shared address registry so local tooling stays in sync.
