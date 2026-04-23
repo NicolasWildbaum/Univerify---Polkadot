@@ -1,11 +1,10 @@
 {
-	"_comment": "Template for the `polkadotTestnet` genesis config. Copy this file to genesis-testnet.json (gitignored) and fill it in before running `npm run deploy:univerify:testnet`. Each `account` must be the H160 that pallet-revive's AccountId32Mapper derives for the university's real Polkadot SS58 account (keccak256(pubkey)[-20:]). When the university signs from PWAllet / Polkadot.js, pallet-revive will present that exact H160 as msg.sender. The _ss58Mapping block is informational — it records which SS58 each H160 came from so deployments stay auditable. metadataHash should be the keccak256 of the institution's off-chain metadata document (DID doc, IPFS CID, etc.), or 0x00..00 if none. approvalThreshold must satisfy 1 <= threshold <= issuers.length.",
+	"_comment": "Template for the `polkadotTestnet` genesis config. Copy this file to genesis-testnet.json (gitignored) and fill it in before running `npm run deploy:univerify:testnet`. Each `account` must be the H160 that pallet-revive's AccountId32Mapper derives for the university's real Polkadot SS58 account (keccak256(pubkey)[-20:]). When the university signs from PWAllet / Polkadot.js, pallet-revive will present that exact H160 as msg.sender. The _ss58Mapping block is informational — it records which SS58 each H160 came from so deployments stay auditable. metadataHash should be the keccak256 of the institution's off-chain metadata document (DID doc, IPFS CID, etc.), or 0x00..00 if none. The approval threshold is computed on-chain as ceil(activeIssuerCount/2) and is not configured here.",
 	"_ss58Mapping": {
 		"University of Montevideo": "5EFCYKc2KsTMDHecmpkaGFLaR6HWt1U2FJQTGuMtyqEDoeqj",
 		"UDELAR": "5FLXu2nKiGmP4wHX3qWt8eLE2g7ksFRyCk7vPZvcAg679TfC",
 		"University ORT": "5H9EGbs2A4CV97vRofjcfaRZTprzy17cR1BAnfM6Bd14sPtv"
 	},
-	"approvalThreshold": 2,
 	"issuers": [
 		{
 			"account": "0x5BD645Fa9828FE27330bD7a85BE54ae9CdC38EA5",
