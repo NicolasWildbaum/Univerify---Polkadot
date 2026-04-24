@@ -84,7 +84,7 @@ _Be direct. You will not hurt anyone's feelings. This is why we are asking._
 
 - **Bug reports filed:** https://github.com/TalismanSociety/talisman/issues/2401
 - **PRs submitted to stack repos:**
-- **Pitch slides / presentation:**
+- **Pitch slides / presentation:**  https://github.com/NicolasWildbaum/Univerify---Polkadot/tree/master/files
 - **Demo video (if any):**
-- **Live deployment (if any):**
+- **Live deployment (if any):** https://nicolaswildbaum.github.io/Univerify---Polkadot/
 - **Anything else worth sharing:**
