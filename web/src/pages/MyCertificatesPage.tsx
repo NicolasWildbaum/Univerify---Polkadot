@@ -18,6 +18,7 @@
 // action when the verifier UX is defined.
 
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { type Abi, type Address, type Hex } from "viem";
 import { univerifyAbi } from "../config/univerify";
 import { certificateNftAbi } from "../config/certificateNft";
@@ -55,6 +56,7 @@ import {
 	storeFetchedCertificatePdf,
 	type StoredCertificatePdfRecord,
 } from "../utils/certificatePdfStore";
+import PdfViewer from "../components/PdfViewer";
 
 interface CertificateRow {
 	tokenId: bigint;
@@ -295,6 +297,7 @@ function CertificateCard({
 	type ProofStatus = "idle" | "signing" | "done" | "error";
 	const [proofStatus, setProofStatus] = useState<ProofStatus>("idle");
 	const [proofUrl, setProofUrl] = useState<string | null>(null);
+	const [proofRouterPath, setProofRouterPath] = useState<string | null>(null);
 	const [proofError, setProofError] = useState<string | null>(null);
 	const [proofCopied, setProofCopied] = useState(false);
 	const [attachStatus, setAttachStatus] = useState<
@@ -307,6 +310,7 @@ function CertificateCard({
 	);
 	const [pdfLoading, setPdfLoading] = useState(false);
 	const [pdfMessage, setPdfMessage] = useState<string | null>(null);
+	const [showPdfInline, setShowPdfInline] = useState(false);
 
 	const verifyUrl = `${window.location.origin}/#/verify/cert/${row.certificateId}`;
 	const issuedAtIso =
@@ -471,6 +475,7 @@ function CertificateCard({
 			const encoded = encodePresentation(presentation);
 			const url = `${window.location.origin}/#/verify/cert/${row.certificateId}?presentation=${encoded}`;
 			setProofUrl(url);
+			setProofRouterPath(`/verify/cert/${row.certificateId}?presentation=${encoded}`);
 			setProofStatus("done");
 			// Auto-copy to clipboard
 			navigator.clipboard?.writeText(url).catch(() => {});
@@ -489,18 +494,6 @@ function CertificateCard({
 				setTimeout(() => setProofCopied(false), 1500);
 			})
 			.catch(() => {});
-	}
-
-	function openPdf() {
-		if (!pdfRecord) return;
-		const blob = new Blob([pdfRecord.pdfBytes], { type: "application/pdf" });
-		const url = URL.createObjectURL(blob);
-		const opened = window.open(url, "_blank", "noopener,noreferrer");
-		if (!opened) {
-			URL.revokeObjectURL(url);
-			return;
-		}
-		setTimeout(() => URL.revokeObjectURL(url), 60_000);
 	}
 
 	return (
@@ -555,12 +548,12 @@ function CertificateCard({
 					Open verifier
 				</a>
 				<button
-					onClick={openPdf}
+					onClick={() => setShowPdfInline((v) => !v)}
 					disabled={!pdfRecord}
 					className="btn-secondary text-xs"
-					title={pdfRecord ? "Open the cached PDF in a new tab" : "PDF not available on this device yet"}
+					title={pdfRecord ? "Preview the PDF inline" : "PDF not available on this device yet"}
 				>
-					View PDF
+					{showPdfInline ? "Hide PDF" : "View PDF"}
 				</button>
 				<button
 					onClick={() =>
@@ -609,6 +602,12 @@ function CertificateCard({
 					{expanded ? "Hide details" : "View details"}
 				</button>
 			</div>
+
+			{showPdfInline && pdfRecord && (
+				<div className="rounded-lg border border-white/[0.08] overflow-hidden animate-fade-in">
+					<PdfViewer bytes={pdfRecord.pdfBytes} />
+				</div>
+			)}
 
 			{(pdfLoading || pdfRecord || attachedCid || attachMessage || pdfMessage) && (
 				<div
@@ -666,9 +665,16 @@ function CertificateCard({
 						{PROOF_VALIDITY_SECONDS / 60} minutes.
 					</p>
 					<p className="text-xs text-text-muted break-all font-mono">{proofUrl}</p>
-					<button onClick={copyProofUrl} className="btn-secondary text-xs">
-						{proofCopied ? "Copied!" : "Copy again"}
-					</button>
+					<div className="flex gap-2 flex-wrap">
+						<button onClick={copyProofUrl} className="btn-secondary text-xs">
+							{proofCopied ? "Copied!" : "Copy again"}
+						</button>
+						{proofRouterPath && (
+							<Link to={proofRouterPath} className="btn-secondary text-xs">
+								Open verify page
+							</Link>
+						)}
+					</div>
 				</div>
 			)}
 

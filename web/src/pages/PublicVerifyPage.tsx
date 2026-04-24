@@ -25,6 +25,7 @@ import {
 import { MonthYearPicker } from "../components/MonthYearPicker";
 import { fetchMetadataFromBulletin } from "../hooks/useBulletin";
 import type { IssuerMetadata } from "../utils/issuerMetadata";
+import PdfViewer from "../components/PdfViewer";
 
 const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000";
 
@@ -98,6 +99,7 @@ export default function PublicVerifyPage() {
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [pdfIntegrity, setPdfIntegrity] = useState<PdfIntegrityState>({ kind: "idle" });
+	const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
 	const [metadataFetch, setMetadataFetch] = useState<MetadataFetchState>({ kind: "idle" });
 
 	const presentationParam = searchParams.get("presentation");
@@ -230,11 +232,13 @@ export default function PublicVerifyPage() {
 	useEffect(() => {
 		if (!data?.exists || !data.pdfCid) {
 			setPdfIntegrity({ kind: "idle" });
+			setPdfBytes(null);
 			return;
 		}
 
 		let cancelled = false;
 		setPdfIntegrity({ kind: "loading" });
+		setPdfBytes(null);
 
 		(async () => {
 			try {
@@ -243,6 +247,7 @@ export default function PublicVerifyPage() {
 					throw new Error(`HTTP ${response.status} while fetching the PDF from Bulletin.`);
 				}
 				const bytes = new Uint8Array(await response.arrayBuffer());
+				if (!cancelled) setPdfBytes(bytes);
 				const extracted = extractCertificatePdfPayload(bytes);
 				if (!extracted.ok) {
 					if (!cancelled) {
@@ -410,6 +415,7 @@ export default function PublicVerifyPage() {
 					proofVerifying={proofVerifying}
 					proofVerdict={proofVerdict}
 					pdfIntegrity={pdfIntegrity}
+					pdfBytes={pdfBytes}
 					metadataFetch={metadataFetch}
 				/>
 			) : null}
@@ -425,6 +431,7 @@ function ResultCard({
 	proofVerifying,
 	proofVerdict,
 	pdfIntegrity,
+	pdfBytes,
 	metadataFetch,
 }: {
 	data: VerificationData;
@@ -434,6 +441,7 @@ function ResultCard({
 	proofVerifying: boolean;
 	proofVerdict: OwnershipVerdict | null;
 	pdfIntegrity: PdfIntegrityState;
+	pdfBytes: Uint8Array | null;
 	metadataFetch: MetadataFetchState;
 }) {
 	const issuedAtIso =
@@ -541,6 +549,7 @@ function ResultCard({
 				<AutoPdfIntegrityCard
 					data={data}
 					pdfIntegrity={pdfIntegrity}
+					pdfBytes={pdfBytes}
 				/>
 			)}
 
@@ -685,12 +694,12 @@ function IssuerMetadataCard({
 function AutoPdfIntegrityCard({
 	data,
 	pdfIntegrity,
+	pdfBytes,
 }: {
 	data: VerificationData;
 	pdfIntegrity: PdfIntegrityState;
+	pdfBytes: Uint8Array | null;
 }) {
-	const gatewayUrl = ipfsUrl(data.pdfCid);
-
 	return (
 		<div className="card space-y-4 animate-fade-in">
 			<div className="flex items-start justify-between gap-3 flex-wrap">
@@ -704,22 +713,16 @@ function AutoPdfIntegrityCard({
 						checked its embedded credential payload against the on-chain claims hash.
 					</p>
 				</div>
-				<a
-					href={gatewayUrl}
-					target="_blank"
-					rel="noreferrer"
-					className="btn-secondary text-xs"
-				>
-					Open raw PDF
-				</a>
 			</div>
 
 			<div className="rounded-[1.25rem] border border-white/[0.08] bg-white/[0.02] overflow-hidden">
-				<iframe
-					title="Certificate PDF preview"
-					src={gatewayUrl}
-					className="h-[520px] w-full bg-white"
-				/>
+				{pdfBytes ? (
+					<PdfViewer bytes={pdfBytes} />
+				) : (
+					<div className="flex items-center justify-center h-32 text-sm text-text-muted">
+						{pdfIntegrity.kind === "loading" ? "Fetching PDF from Bulletin Chain…" : "PDF unavailable"}
+					</div>
+				)}
 			</div>
 
 			{pdfIntegrity.kind === "loading" && (
