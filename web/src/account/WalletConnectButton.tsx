@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useWalletStore, ss58ToEvmAddress, type WalletStatus } from "./wallet";
 import { useChainStore } from "../store/chainStore";
 import { isLocalChain, requestDevFunds } from "./faucet";
+import { DEV_ACCOUNTS } from "./devAccounts";
 
 const WALLET_LABELS: Record<string, string> = {
 	"polkadot-js": "Polkadot.js",
@@ -38,15 +39,19 @@ export default function WalletConnectButton() {
 	const selectAccount = useWalletStore((s) => s.selectAccount);
 	const restore = useWalletStore((s) => s.restore);
 
+	const connectDev = useWalletStore((s) => s.connectDev);
+
 	const [open, setOpen] = useState(false);
 	const rootRef = useRef<HTMLDivElement | null>(null);
 
 	useEffect(() => {
 		refreshExtensions();
-		// Some extensions inject a tick or two after the page loads, so re-check.
-		const t = setTimeout(refreshExtensions, 750);
+		// Extensions inject at unpredictable times — poll several times to catch late injectors.
+		const timers = [100, 500, 1000, 2000, 4000].map((ms) =>
+			setTimeout(refreshExtensions, ms),
+		);
 		void restore();
-		return () => clearTimeout(t);
+		return () => timers.forEach(clearTimeout);
 	}, [refreshExtensions, restore]);
 
 	// Close on outside click.
@@ -103,6 +108,11 @@ export default function WalletConnectButton() {
 							extensions={availableExtensions}
 							onConnect={async (name) => {
 								await connect(name);
+								setOpen(false);
+							}}
+							onRefresh={refreshExtensions}
+							onConnectDev={(account) => {
+								connectDev(account);
 								setOpen(false);
 							}}
 						/>
@@ -246,10 +256,14 @@ function DiscoverPanel({
 	status,
 	extensions,
 	onConnect,
+	onRefresh,
+	onConnectDev,
 }: {
 	status: WalletStatus;
 	extensions: string[];
 	onConnect: (extensionName: string) => void | Promise<void>;
+	onRefresh: () => void;
+	onConnectDev: (account: (typeof DEV_ACCOUNTS)[number]) => void;
 }) {
 	return (
 		<div className="space-y-3">
@@ -268,9 +282,15 @@ function DiscoverPanel({
 			</p>
 
 			{extensions.length === 0 ? (
-				<p className="text-xs text-accent-orange">
-					No wallet detected. Install an extension and refresh.
-				</p>
+				<div className="space-y-2">
+					<p className="text-xs text-accent-orange">
+						No wallet detected. Make sure the extension is installed and this site is
+						authorized in its settings.
+					</p>
+					<button onClick={onRefresh} className="btn-secondary text-xs w-full justify-center">
+						Refresh
+					</button>
+				</div>
 			) : (
 				<div className="flex flex-col gap-1.5">
 					{extensions.map((name) => (
@@ -283,8 +303,31 @@ function DiscoverPanel({
 							{labelFor(name)}
 						</button>
 					))}
+					<button
+						onClick={onRefresh}
+						className="text-[11px] text-text-tertiary hover:text-text-secondary text-center py-1"
+					>
+						Not seeing your wallet? Refresh
+					</button>
 				</div>
 			)}
+
+			<div className="pt-2 border-t border-white/[0.06] space-y-2">
+				<p className="text-[11px] text-text-tertiary uppercase tracking-wider">
+					Dev accounts
+				</p>
+				<div className="flex flex-col gap-1">
+					{DEV_ACCOUNTS.map((account) => (
+						<button
+							key={account.address}
+							onClick={() => onConnectDev(account)}
+							className="btn-secondary text-xs justify-start px-4"
+						>
+							{account.name}
+						</button>
+					))}
+				</div>
+			</div>
 
 			{status.kind === "error" && <p className="text-xs text-accent-red">{status.message}</p>}
 		</div>

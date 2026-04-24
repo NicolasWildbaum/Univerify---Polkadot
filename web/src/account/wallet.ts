@@ -23,6 +23,7 @@ import {
 import type { PolkadotSigner } from "polkadot-api";
 import { getSs58AddressInfo, Keccak256 } from "@polkadot-api/substrate-bindings";
 import type { Address } from "viem";
+import { DEV_ACCOUNTS } from "./devAccounts";
 
 const STORAGE_KEY = "univerify:wallet";
 
@@ -67,6 +68,8 @@ interface WalletState {
 	extensionAccounts: InjectedPolkadotAccount[];
 	refreshExtensions: () => void;
 	connect: (extensionName: string, preferredAddress?: string) => Promise<void>;
+	/** Connect directly with a well-known dev account (no browser extension needed). */
+	connectDev: (account: InjectedPolkadotAccount) => void;
 	selectAccount: (address: string) => void;
 	disconnect: () => void;
 	/** Attempt to silently restore the previous session. */
@@ -200,6 +203,17 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 		}
 	},
 
+	connectDev: (account) => {
+		currentUnsubscribe?.();
+		currentUnsubscribe = null;
+		currentExtensionName = "dev";
+		set({
+			status: { kind: "connected", extensionName: "dev", account },
+			extensionAccounts: DEV_ACCOUNTS,
+		});
+		persist({ extensionName: "dev", address: account.address });
+	},
+
 	selectAccount: (address) => {
 		const { extensionAccounts, status } = get();
 		if (status.kind !== "connected") return;
@@ -229,6 +243,11 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 	restore: async () => {
 		const stored = loadStored();
 		if (!stored) return;
+		if (stored.extensionName === "dev") {
+			const account = DEV_ACCOUNTS.find((a) => a.address === stored.address);
+			if (account) get().connectDev(account);
+			return;
+		}
 		// Best-effort: attempt to reconnect silently. If the user hasn't
 		// authorized us yet the extension will throw and we stay disconnected.
 		try {
