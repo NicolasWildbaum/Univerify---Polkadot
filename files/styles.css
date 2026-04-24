@@ -1,0 +1,422 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* ── Variables ──────────────────────────────────────────────────────────── */
+
+:root {
+  --bg:           #090c14;
+  --surface:      #0f1623;
+  --surface-2:    #18212f;
+  --pink:         #e6007a;
+  --pink-dim:     rgba(230, 0, 122, 0.14);
+  --teal:         #09c2b8;
+  --teal-dim:     rgba(9, 194, 184, 0.12);
+  --gold:         #f4b53f;
+  --gold-dim:     rgba(244, 181, 63, 0.12);
+  --text:         #dde4ef;
+  --muted:        #64748b;
+  --border:       rgba(255, 255, 255, 0.07);
+  --green:        #22c55e;
+  --red:          #ef4444;
+}
+
+/* ── Reveal base ────────────────────────────────────────────────────────── */
+
+.reveal {
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(ellipse 80% 55% at 92% 0%,   rgba(230, 0, 122, 0.10), transparent),
+    radial-gradient(ellipse 60% 50% at 0%  95%,   rgba(9, 194, 184, 0.08), transparent);
+  color: var(--text);
+}
+
+.reveal .slides {
+  text-align: left;
+}
+
+.reveal .slides section {
+  padding: 40pt 55pt;
+  box-sizing: border-box;
+}
+
+/* ── Typography ─────────────────────────────────────────────────────────── */
+
+.reveal h1 {
+  font-size: 52pt;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.08;
+  text-transform: none;
+  margin: 0 0 0.3em;
+  background: linear-gradient(130deg, #ffffff 0%, var(--teal) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.reveal h2 {
+  font-size: 26pt;
+  font-weight: 700;
+  color: #ffffff;
+  text-transform: none;
+  letter-spacing: -0.02em;
+  margin: 0 0 24pt;
+  padding-bottom: 10pt;
+  border-bottom: 2px solid var(--pink);
+  display: inline-block;
+}
+
+.reveal h3 {
+  font-size: 13pt;
+  font-weight: 600;
+  color: var(--teal);
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 0 0 8pt;
+}
+
+.reveal p {
+  font-size: 14pt;
+  line-height: 1.6;
+  color: var(--text);
+  margin: 0 0 0.5em;
+}
+
+.reveal li {
+  font-size: 14pt;
+  line-height: 1.6;
+  color: var(--text);
+  margin-bottom: 0.4em;
+}
+
+.reveal ul,
+.reveal ol {
+  display: block;
+  margin-left: 1.2em;
+}
+
+.reveal strong {
+  color: var(--gold);
+  font-weight: 600;
+}
+
+.reveal em {
+  color: var(--teal);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.reveal code {
+  font-size: 0.88em;
+  color: var(--teal);
+  background: rgba(9, 194, 184, 0.1);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.reveal blockquote {
+  width: auto;
+  margin: 0;
+  padding: 14pt 18pt;
+  background: var(--pink-dim);
+  border-left: 4px solid var(--pink);
+  border-radius: 0 10px 10px 0;
+  box-shadow: none;
+  font-style: normal;
+}
+
+.reveal blockquote p {
+  font-size: 15pt;
+  margin: 0;
+  color: var(--text);
+}
+
+/* ── Progress / controls ─────────────────────────────────────────────────── */
+
+.reveal .progress {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.reveal .progress span {
+  background: linear-gradient(90deg, var(--pink), var(--teal));
+}
+
+.reveal .controls button {
+  color: var(--pink);
+}
+
+.reveal .slide-number {
+  font-size: 10pt;
+  color: var(--muted);
+  background: transparent;
+  padding: 4px 8px;
+  bottom: 14px;
+  right: 16px;
+}
+
+/* ── Section divider slide ──────────────────────────────────────────────── */
+
+.section-divider {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  height: 100% !important;
+}
+
+.section-divider .tagline {
+  font-size: 17pt;
+  color: var(--muted);
+  margin-top: 0;
+  line-height: 1.5;
+}
+
+.section-divider .sub {
+  font-size: 13pt;
+  color: var(--muted);
+  margin-top: 6pt;
+}
+
+/* ── Badge pill ─────────────────────────────────────────────────────────── */
+
+.badge {
+  display: inline-block;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 10pt;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 16pt;
+  background: var(--teal-dim);
+  color: var(--teal);
+  border: 1px solid rgba(9, 194, 184, 0.35);
+}
+
+.badge-pink {
+  background: var(--pink-dim);
+  color: var(--pink);
+  border-color: rgba(230, 0, 122, 0.35);
+}
+
+/* ── Content wrapper ─────────────────────────────────────────────────────── */
+
+.content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 18pt;
+}
+
+/* ── Text utilities ─────────────────────────────────────────────────────── */
+
+.text-lead {
+  font-size: 15pt !important;
+  line-height: 1.55 !important;
+  color: var(--text) !important;
+}
+
+.text-muted {
+  color: var(--muted) !important;
+}
+
+.text-teal  { color: var(--teal) !important; }
+.text-pink  { color: var(--pink) !important; }
+.text-gold  { color: var(--gold) !important; }
+.text-white { color: #ffffff !important; }
+
+/* ── Problem card ───────────────────────────────────────────────────────── */
+
+.problem-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--pink);
+  border-radius: 0 0 12px 12px;
+  padding: 18pt 16pt;
+}
+
+.problem-card .icon {
+  font-size: 22pt;
+  color: var(--pink);
+  margin-bottom: 10pt;
+}
+
+.problem-card h3 {
+  font-size: 12pt;
+  font-weight: 600;
+  color: #ffffff;
+  margin-bottom: 8pt;
+}
+
+.problem-card p {
+  font-size: 12pt;
+  line-height: 1.55;
+  color: var(--text);
+  margin: 0;
+}
+
+/* ── Callout boxes ──────────────────────────────────────────────────────── */
+
+.callout {
+  padding: 14pt 16pt;
+  border-radius: 0 10px 10px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--pink);
+}
+
+.callout p {
+  margin: 0;
+  font-size: 13pt;
+  line-height: 1.5;
+}
+
+.callout-teal {
+  border-left-color: var(--teal);
+  background: var(--teal-dim);
+  border-color: rgba(9, 194, 184, 0.2);
+}
+
+.callout-gold {
+  border-left-color: var(--gold);
+  background: var(--gold-dim);
+  border-color: rgba(244, 181, 63, 0.2);
+}
+
+/* ── Scope row ──────────────────────────────────────────────────────────── */
+
+.scope-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10pt;
+  padding: 11pt 14pt;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--teal);
+  border-radius: 0 8px 8px 0;
+}
+
+.scope-row .scope-label {
+  font-size: 10pt;
+  font-weight: 700;
+  color: var(--teal);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+  min-width: 80pt;
+}
+
+.scope-row p {
+  font-size: 13pt;
+  margin: 0;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+/* ── Limitation card ────────────────────────────────────────────────────── */
+
+.limit-card {
+  padding: 14pt 16pt;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  gap: 12pt;
+  align-items: flex-start;
+}
+
+.limit-card .limit-icon {
+  font-size: 16pt;
+  color: var(--gold);
+  flex-shrink: 0;
+  padding-top: 2pt;
+}
+
+.limit-card h3 {
+  font-size: 12pt;
+  font-weight: 600;
+  color: #ffffff;
+  margin: 0 0 4pt;
+}
+
+.limit-card p {
+  font-size: 12pt;
+  line-height: 1.5;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ── Key point ──────────────────────────────────────────────────────────── */
+
+.key-point {
+  padding: 14pt 18pt;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.key-point .kp-icon {
+  font-size: 20pt;
+  color: var(--teal);
+  margin-bottom: 8pt;
+}
+
+.key-point h3 {
+  font-size: 12pt;
+  font-weight: 700;
+  color: #ffffff;
+  margin-bottom: 6pt;
+  text-transform: none;
+}
+
+.key-point p {
+  font-size: 12pt;
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Mermaid diagrams ───────────────────────────────────────────────────── */
+
+.mermaid-wrap {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 0;
+  width: 100%;
+}
+
+.mermaid {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  max-height: 520px;
+  height: auto;
+}
+
+/* gov slide: smaller diagram to leave room for key-points */
+.gov-diagram .mermaid svg {
+  max-height: 260px;
+}
+
+/* ── Demo slide specific ────────────────────────────────────────────────── */
+
+.demo-url {
+  font-size: 14pt;
+  color: var(--muted);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10pt 18pt;
+  display: inline-block;
+  margin-top: 20pt;
+}

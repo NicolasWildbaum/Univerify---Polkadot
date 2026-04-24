@@ -1,0 +1,236 @@
+:root {
+  --uv-bg: #090c14;
+  --uv-surface: #0f1623;
+  --uv-surface-2: #18212f;
+  --uv-pink: #e6007a;
+  --uv-pink-dim: rgba(230, 0, 122, 0.18);
+  --uv-teal: #09c2b8;
+  --uv-teal-dim: rgba(9, 194, 184, 0.14);
+  --uv-gold: #f4b53f;
+  --uv-text: #dde4ef;
+  --uv-muted: #64748b;
+  --uv-border: rgba(255, 255, 255, 0.06);
+  --uv-code-bg: #0d1420;
+}
+
+/* ── Base ───────────────────────────────────────────────────────────── */
+
+.reveal {
+  font-family: "Inter", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  color: var(--uv-text);
+  background-color: var(--uv-bg);
+  background-image:
+    radial-gradient(ellipse 70% 50% at 85% 5%, rgba(230, 0, 122, 0.12), transparent),
+    radial-gradient(ellipse 60% 50% at 5% 90%, rgba(9, 194, 184, 0.10), transparent);
+}
+
+.reveal .slides {
+  text-align: left;
+}
+
+.reveal .slides section {
+  padding: 0.3rem 0.15rem;
+}
+
+/* ── Typography ─────────────────────────────────────────────────────── */
+
+.reveal h1,
+.reveal h2,
+.reveal h3,
+.reveal h4 {
+  margin: 0 0 0.55em;
+  color: #ffffff;
+  text-transform: none;
+  letter-spacing: -0.025em;
+  font-weight: 700;
+}
+
+.reveal h1 {
+  font-size: 2.4em;
+  background: linear-gradient(135deg, #ffffff 0%, var(--uv-teal) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.reveal h2 {
+  font-size: 1.55em;
+  padding-bottom: 0.25em;
+  border-bottom: 2px solid var(--uv-pink);
+  display: inline-block;
+}
+
+.reveal h3 {
+  font-size: 1.05em;
+  color: var(--uv-teal);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.reveal p,
+.reveal li,
+.reveal td,
+.reveal th,
+.reveal blockquote {
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+
+.reveal ul,
+.reveal ol {
+  display: block;
+  margin-left: 1em;
+}
+
+.reveal li + li {
+  margin-top: 0.3em;
+}
+
+.reveal strong {
+  color: var(--uv-gold);
+  font-weight: 600;
+}
+
+.reveal em {
+  color: var(--uv-teal);
+  font-style: normal;
+  font-weight: 500;
+}
+
+/* ── Code ───────────────────────────────────────────────────────────── */
+
+.reveal code {
+  color: var(--uv-teal);
+  background: rgba(9, 194, 184, 0.08);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+
+.reveal pre {
+  width: 100%;
+  margin: 0.7rem 0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px var(--uv-border),
+    0 20px 50px rgba(0, 0, 0, 0.5);
+  background: var(--uv-code-bg);
+}
+
+.reveal pre code {
+  max-height: 500px;
+  padding: 1rem 1.1rem;
+  background: var(--uv-code-bg);
+  color: #c9d1d9;
+  font-size: 0.72em;
+}
+
+/* ── Blockquote ─────────────────────────────────────────────────────── */
+
+.reveal blockquote {
+  width: auto;
+  margin: 0.9rem 0;
+  padding: 0.8rem 1rem;
+  color: var(--uv-text);
+  background: var(--uv-pink-dim);
+  border-left: 4px solid var(--uv-pink);
+  border-radius: 0 8px 8px 0;
+  box-shadow: none;
+  font-style: normal;
+}
+
+.reveal blockquote code {
+  color: var(--uv-gold);
+  background: rgba(244, 181, 63, 0.1);
+}
+
+/* ── Tables ─────────────────────────────────────────────────────────── */
+
+.reveal table {
+  width: 100%;
+  margin-top: 0.8rem;
+  border-collapse: collapse;
+  font-size: 0.62em;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--uv-border);
+}
+
+.reveal table th {
+  padding: 0.55rem 0.7rem;
+  color: #ffffff;
+  background: var(--uv-surface-2);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 0.9em;
+}
+
+.reveal table td {
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--uv-border);
+  background: var(--uv-surface);
+}
+
+.reveal table tr:last-child td {
+  border-bottom: none;
+}
+
+.reveal table tr:nth-child(odd) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ── Mermaid diagrams ───────────────────────────────────────────────── */
+
+.mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 0.5rem 0;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  max-height: 680px;
+}
+
+/* ── Progress + Controls ────────────────────────────────────────────── */
+
+.reveal .progress {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.reveal .progress span {
+  background: linear-gradient(90deg, var(--uv-pink), var(--uv-teal));
+}
+
+.reveal .controls button {
+  color: var(--uv-pink);
+}
+
+.reveal .slide-number {
+  right: 18px;
+  bottom: 16px;
+  padding: 0.15rem 0.45rem;
+  color: var(--uv-muted);
+  background: transparent;
+  font-size: 0.75em;
+  border-radius: 4px;
+}
+
+/* ── Title slide ────────────────────────────────────────────────────── */
+
+.reveal .slides section:first-child h1 {
+  font-size: 3em;
+  margin-bottom: 0.3em;
+}
+
+.reveal .slides section:first-child p {
+  color: var(--uv-muted);
+  font-size: 1em;
+}
+
+.reveal .slides section:first-child strong {
+  color: var(--uv-text);
+}

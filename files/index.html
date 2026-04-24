@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Univerify — Technical Pitch</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="./node_modules/reveal.js/dist/reset.css">
+  <link rel="stylesheet" href="./node_modules/reveal.js/dist/reveal.css">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- ═══════════════════════════════════════════════════════
+     TITLE
+════════════════════════════════════════════════════════ -->
+<section id="title" class="section-divider">
+  <div class="badge">Polkadot Blockchain Academy · 2026</div>
+  <h1>Univerify</h1>
+  <p class="tagline">Federated Academic Credential Registry on Polkadot</p>
+  <aside class="notes">
+    "Hi — I want to start with a problem everyone in this room will eventually face:
+    verifying that someone actually has the degree they claim to have."
+  </aside>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════
+     1. MOTIVATION AND THE PROBLEM
+════════════════════════════════════════════════════════ -->
+<section id="problem">
+  <h2>Motivation &amp; The Problem</h2>
+  <div class="content">
+
+    <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:16pt;">
+      <div class="problem-card">
+        <div class="icon"><i class="fa-solid fa-phone-slash"></i></div>
+        <h3>Institution Dependency</h3>
+        <p>Verification means calling the university — slow, opaque, and fails when the institution closes or loses records.</p>
+      </div>
+      <div class="problem-card">
+        <div class="icon"><i class="fa-solid fa-file-circle-xmark"></i></div>
+        <h3>No Cryptographic Proof</h3>
+        <p>PDFs carry no verifiable link to the issuer. Any diploma can be forged in minutes with basic software.</p>
+      </div>
+    </div>
+
+    <blockquote>
+      <p>Who is the authority — and can we build a system that works <strong>without one?</strong></p>
+    </blockquote>
+
+  </div>
+  <aside class="notes">
+    "[Open with personal story — ~20 seconds.]
+    The point is structural, not just inconvenient. Any single authority is a failure mode — the
+    university closes, the admin key leaks, the company shuts down.
+    The question is: can we replace the central authority with a protocol?"
+  </aside>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════
+     2. THE PROBLEM: A WEB3 APPROACH
+════════════════════════════════════════════════════════ -->
+<section id="approach">
+  <h2>A Web3 Approach</h2>
+  <div class="content">
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:26pt; flex:1;">
+      <div style="display:flex; flex-direction:column; gap:12pt; justify-content:center;">
+        <div class="scope-row">
+          <span class="scope-label">Credential</span>
+          <p><strong>keccak256(canonical claims)</strong> — a hash, not a PDF. No document on-chain.</p>
+        </div>
+        <div class="scope-row">
+          <span class="scope-label">Privacy</span>
+          <p><strong>No PII on-chain.</strong> Holder name never touches the chain — only the hash.</p>
+        </div>
+        <div class="scope-row">
+          <span class="scope-label">Governance</span>
+          <p>Active universities govern admission and removal. <strong>No owner. No admin key.</strong></p>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:12pt; justify-content:center;">
+        <div class="scope-row">
+          <span class="scope-label">Ownership</span>
+          <p><strong>Soulbound ERC-721</strong> minted atomically — non-transferable, mirrors revocation.</p>
+        </div>
+        <div class="scope-row">
+          <span class="scope-label">Runtime</span>
+          <p><strong>Solidity contracts on Polkadot</strong> via pallet-revive — EVM execution, Substrate wallets.</p>
+        </div>
+        <div class="scope-row">
+          <span class="scope-label">Verification</span>
+          <p>Verifier recomputes the hash locally and calls the chain — <strong>no middleman, no API, no permission needed.</strong></p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <aside class="notes">
+    "Core insight: you don't verify a document, you verify a hash against a registry.
+    The PII constraint is deliberate — even a fully compromised chain reveals nothing about holders.
+    'No owner' is not a gap — it's the design: every write privilege flows from Active-issuer status.
+    pallet-revive bridges EVM and Substrate: same Solidity ABI, Polkadot security and wallets.
+
+    On 'trustless, permissionless, public' — three distinct properties:
+    — Trustless: the outcome is determined purely by math, not by trusting any institution. The
+      verifier recomputes the hash client-side and calls verifyCertificate on the chain. If the
+      hashes match and the cert is not revoked, it is valid — full stop. No need to trust Univerify,
+      the issuing university, or any intermediary service.
+    — Permissionless: anyone — an employer, a government office, a random person — can verify any
+      credential at any time. No account, no fee, no whitelist, no API key. The contract is public.
+    — Public: the contract source and state live on a public blockchain. The verification logic
+      can be audited, forked, or replicated by anyone, and it will remain queryable as long as
+      the chain runs — no company needs to stay in business for it to work."
+  </aside>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════
+     3. ARCHITECTURE
+════════════════════════════════════════════════════════ -->
+<section id="architecture" style="display:flex; flex-direction:column; height:100%; padding:40pt 55pt;">
+  <h2>Architecture</h2>
+  <div class="mermaid-wrap">
+    <div class="mermaid">
+flowchart LR
+    USERS["Universities · Students · Verifiers"]
+    APP[Univerify Web App]
+    READS["Read Path · viem"]
+    WRITES["Write Path · PAPI"]
+    REGISTRY[Univerify Registry]
+    CERTNFT[Certificate NFT]
+    EVIDENCE["PDFs and Metadata · Off-chain"]
+
+    USERS --> APP
+    APP --> READS
+    APP --> WRITES
+    READS --> REGISTRY
+    WRITES --> REGISTRY
+    REGISTRY --> CERTNFT
+    REGISTRY --> EVIDENCE
+    APP --> EVIDENCE
+    </div>
+  </div>
+  <aside class="notes">
+    "At a high level, Univerify has a web app used by universities, students, and verifiers.
+    Reads go through viem, writes go through PAPI, and both interact with the on-chain registry.
+    The registry stores the source of truth, the NFT contract represents certificate ownership,
+    and PDFs or metadata remain off-chain as verifiable evidence."
+  </aside>
+</section>
+
+<!-- SLIDE 5 (Issuing a Certificate) — hidden, restore by moving inside .slides -->
+<template id="slide-issuance">
+<section id="issuance" style="display:flex; flex-direction:column; height:100%; padding:40pt 55pt;">
+  <h2>Issuing a Certificate</h2>
+  <div class="mermaid-wrap">
+    <div class="mermaid">
+sequenceDiagram
+    participant Uni as University
+    participant FE as Frontend
+    participant W as Wallet
+    participant UV as Univerify
+    participant NFT as CertNFT
+
+    Uni->>FE: claims, internalRef, studentAddr
+    Note over FE: normalize and hash claims
+    FE->>UV: preflight simulation
+    FE->>W: sign extrinsic
+    W->>UV: issueCertificate
+    UV->>NFT: mintFor student
+    NFT-->>UV: token minted
+    UV-->>FE: confirmed
+    </div>
+  </div>
+  <aside class="notes">
+    "Everything before the wallet prompt is off-chain: NFC + uppercase + trim normalization, keccak256
+    hash, and certId = keccak256(issuer + internalRef).
+    Preflight decodes the exact Solidity error name — CertificateAlreadyExists, NotActiveIssuer —
+    before the user signs anything.
+    issueCertificate + mintFor is atomic: both succeed or both revert. No partial state.
+    No PII touches the chain — only the hash, the issuer address, a timestamp, and the revocation flag."
+  </aside>
+</section>
+</template>
+
+<!-- SLIDE 6 (Verifying a Certificate) — hidden, restore by moving inside .slides -->
+<template id="slide-verification">
+<section id="verification" style="display:flex; flex-direction:column; height:100%; padding:40pt 55pt;">
+  <h2>Verifying a Certificate</h2>
+  <div class="mermaid-wrap">
+    <div class="mermaid">
+sequenceDiagram
+    actor V as Verifier
+    participant VP as Verify Page
+    participant UV as Univerify.sol
+    participant NFT as CertificateNft.sol
+
+    V->>VP: /verify/cert/0xcertId
+    par parallel reads
+        VP->>UV: certificates(certId)
+    and
+        VP->>UV: isActiveIssuer(issuer)
+    and
+        VP->>NFT: ownerOf(tokenId)
+    end
+    Note over VP: recompute claimsHash from presented claims
+    VP->>VP: exists, hashMatch, not revoked, activeIssuer
+    VP-->>V: VALID / REVOKED / NOT FOUND
+    </div>
+  </div>
+  <aside class="notes">
+    "Three reads fire in parallel — no sequential dependency.
+    Verifier supplies the raw claims; the hash is recomputed client-side using the same normalization.
+    Four independent trust signals: existence, integrity (hash match), revocation, issuer status.
+    Historical verifiability: a cert issued by an Active issuer remains valid even if that issuer
+    is later removed by governance."
+  </aside>
+</section>
+</template>
+
+<!-- ═══════════════════════════════════════════════════════
+     6. GOVERNANCE
+════════════════════════════════════════════════════════ -->
+<section id="governance" style="display:flex; flex-direction:column; height:100%; padding:40pt 55pt;">
+  <h2>Governance</h2>
+
+  <div class="mermaid-wrap gov-diagram" style="flex:0.5;">
+    <div class="mermaid">
+stateDiagram-v2
+    direction LR
+    [*] --> None
+    None --> Pending : applyAsIssuer
+    Pending --> Active : threshold approvals
+    Active --> Removed : threshold removal votes
+    Removed --> Pending : re-apply new epoch
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:14pt; margin-top:12pt;">
+    <div class="key-point">
+      <div class="kp-icon"><i class="fa-solid fa-ban"></i></div>
+      <h3>No Owner. No Admin Key.</h3>
+      <p>Every write privilege flows from Active-issuer status — no back door.</p>
+    </div>
+    <div class="key-point">
+      <div class="kp-icon"><i class="fa-solid fa-scale-balanced"></i></div>
+      <h3>Symmetric Trust</h3>
+      <p>Same <code>approvalThreshold</code> governs both admission and removal.</p>
+    </div>
+  </div>
+
+  <aside class="notes">
+    "No owner, no admin key. The only actors are Active issuers.
+    Symmetric threshold: the quorum that admits you is the same quorum that removes you.
+    issuerEpoch trick: approvals keyed by (candidate, epoch, approver) — increment epoch,
+    old records are unreachable without touching them. O(1) invalidation, no mass writes.
+    Known trade-off: if active count drops below threshold, system deadlocks. Recovery = redeploy.
+    Accepted to keep the model simple."
+  </aside>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════
+     7. DEMO
+════════════════════════════════════════════════════════ -->
+<section id="demo" class="section-divider">
+  <div class="badge badge-pink">Live</div>
+  <h1>Demo</h1>
+  <p class="tagline">Paseo TestNet</p>
+  <aside class="notes">
+    "Let me show you the live system.
+    — Governance page: apply as issuer, approve a pending applicant.
+    — Issuance page: fill claims, preflight, sign, confirm NFT minted.
+    — Verify page: open the cert URL, show VALID result.
+    — My Certificates: student view via soulbound NFT enumeration."
+  </aside>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════
+     8. LIMITATIONS & FUTURE IMPROVEMENTS
+════════════════════════════════════════════════════════ -->
+<section id="future">
+  <h2>Limitations &amp; Future Improvements</h2>
+  <div class="content">
+
+    <div style="display:flex; flex-direction:column; gap:10pt; flex:1;">
+      <div class="limit-card">
+        <div class="limit-icon"><i class="fa-solid fa-wallet"></i></div>
+        <div>
+          <h3>Wallet compatibility</h3>
+          <p>PWallet didn't work. Bulletin and Talisman had integration issues. The demo runs on dev accounts.</p>
+        </div>
+      </div>
+      <div class="limit-card">
+        <div class="limit-icon"><i class="fa-solid fa-mobile-screen"></i></div>
+        <div>
+          <h3>UX</h3>
+          <p>One-click account setup, guided issue → verify → share flow, QR deep-link for mobile credential sharing.</p>
+        </div>
+      </div>
+      <div class="limit-card">
+        <div class="limit-icon"><i class="fa-solid fa-cloud-arrow-up"></i></div>
+        <div>
+          <h3>Storage</h3>
+          <p>Auto-pin to IPFS on issuance; CID stored on-chain as the canonical retrieval reference.</p>
+        </div>
+      </div>
+      <div class="limit-card">
+        <div class="limit-icon"><i class="fa-solid fa-eye-slash"></i></div>
+        <div>
+          <h3>Selective disclosure</h3>
+          <p>ZK circuit over <code>claimsHash</code> — prove "I hold a degree" without revealing institution, name, or date.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <aside class="notes">
+    "Wallet: we tried PWallet — didn't work. Bulletin and Talisman both had integration issues with
+    pallet-revive on Paseo. The demo uses dev accounts (Alice, Bob, Charlie). This is the #1 thing
+    that needs to be fixed before any real user can touch the product.
+    UX: the goal is to make the crypto layer completely invisible. One wallet click, done.
+    Storage: auto-pin to IPFS on issuance so the document survives beyond the chain.
+    ZK selective disclosure: prove 'I hold a degree' without revealing institution, name, or date.
+    Requires a ZK circuit that takes claims as private inputs and outputs a proof verifiable
+    against the on-chain claimsHash."
+  </aside>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════
+     9. BIGGER PICTURE: REPUTATION PARACHAIN
+════════════════════════════════════════════════════════ -->
+<section id="reputation">
+  <h2>Beyond Univerify</h2>
+  <div class="content">
+
+    <p class="text-lead" style="margin-bottom:16pt;">
+      Univerify is just the beginning. The same model applies to <strong>any institution</strong> that makes claims about people.
+    </p>
+
+    <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14pt; margin-bottom:18pt;">
+      <div class="key-point">
+        <div class="kp-icon"><i class="fa-solid fa-stethoscope"></i></div>
+        <h3>Medical Licences</h3>
+        <p>Verify a doctor's qualification — anywhere in the world, instantly.</p>
+      </div>
+      <div class="key-point">
+        <div class="kp-icon"><i class="fa-solid fa-briefcase"></i></div>
+        <h3>Employment Records</h3>
+        <p>An employer attests work history — portable, verifiable, no HR middleman.</p>
+      </div>
+      <div class="key-point">
+        <div class="kp-icon"><i class="fa-solid fa-people-group"></i></div>
+        <h3>DAO Membership</h3>
+        <p>Gate access to on-chain communities based on verifiable real-world credentials.</p>
+      </div>
+      <div class="key-point">
+        <div class="kp-icon"><i class="fa-solid fa-coins"></i></div>
+        <h3>Undercollateralised Loans</h3>
+        <p>A DeFi protocol lends against a verified reputation instead of locked capital.</p>
+      </div>
+    </div>
+
+  </div>
+  <aside class="notes">
+    "Univerify proves the model works for universities. But the same infrastructure — federated
+    governance, hash-based claims, soulbound NFTs — generalises to any issuing institution.
+
+    Think about what becomes possible:
+    Medical licensing boards could issue on-chain licences. A hospital in another country could
+    verify a doctor's credentials in milliseconds without making a phone call.
+    Employment records issued by employers — a portable work history you own, not LinkedIn.
+    Professional bodies like bar associations or engineering institutes could issue membership
+    credentials that gate access to on-chain services.
+    DAO membership: instead of token-gating, gate by verified real-world qualification.
+    DeFi: undercollateralized lending based on verified reputation — a student loan backed by
+    a verified degree, not collateral the student doesn't have.
+
+    And there's a natural connection to proof-of-personhood systems like Proof of Humanity
+    or World ID. Univerify proves *what you achieved*; personhood proves *you are a unique human*.
+    Combined, you get a complete identity layer: who you are and what you've done — without
+    a central authority holding either."
+  </aside>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════
+     10. LET'S TALK
+════════════════════════════════════════════════════════ -->
+<section id="letstalk" class="section-divider">
+  <h1>Let's Talk</h1>
+  <p class="tagline">What else could we build on the <em>Reputation Parachain</em>?</p>
+  <p class="tagline">Thank you!</p>
+  <aside class="notes">
+    "[Open to the room — leave space for answers.]"
+  </aside>
+</section>
+
+</div><!-- /slides -->
+</div><!-- /reveal -->
+
+<script src="./node_modules/reveal.js/dist/reveal.js"></script>
+<script src="./node_modules/reveal.js/plugin/notes/notes.js"></script>
+<script src="./node_modules/mermaid/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif',
+    themeVariables: {
+      background:           '#0f1623',
+      primaryColor:         '#18212f',
+      primaryTextColor:     '#dde4ef',
+      primaryBorderColor:   '#09c2b8',
+      lineColor:            '#64748b',
+      secondaryColor:       '#0f1623',
+      tertiaryColor:        '#18212f',
+      clusterBkg:           '#0f1623',
+      clusterBorder:        'rgba(255,255,255,0.10)',
+      titleColor:           '#dde4ef',
+      edgeLabelBackground:  '#0f1623',
+      nodeTextColor:        '#dde4ef',
+      actorBkg:             '#18212f',
+      actorBorder:          '#09c2b8',
+      actorTextColor:       '#dde4ef',
+      actorLineColor:       '#64748b',
+      signalColor:          '#dde4ef',
+      signalTextColor:      '#dde4ef',
+      labelBoxBkgColor:     '#0f1623',
+      labelBoxBorderColor:  '#09c2b8',
+      labelTextColor:       '#dde4ef',
+      loopTextColor:        '#dde4ef',
+      noteBorderColor:      '#e6007a',
+      noteBkgColor:         'rgba(230,0,122,0.15)',
+      noteTextColor:        '#dde4ef',
+      activationBorderColor:'#e6007a',
+      activationBkgColor:   'rgba(230,0,122,0.12)',
+      stateBkg:             '#18212f',
+      stateBorder:          '#09c2b8',
+    }
+  });
+
+  Reveal.initialize({
+    width:               1280,
+    height:              720,
+    margin:              0.04,
+    controls:            true,
+    progress:            true,
+    slideNumber:         'c/t',
+    hash:                true,
+    transition:          'fade',
+    backgroundTransition:'fade',
+    center:              false,
+    plugins:             [ RevealNotes ]
+  }).then(() => {
+    mermaid.run({ querySelector: '.mermaid' });
+  });
+</script>
+</body>
+</html>
