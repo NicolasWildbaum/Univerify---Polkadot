@@ -99,12 +99,16 @@ fn eth_dev_accounts() -> Vec<AccountId> {
 fn univerify_issuer_accounts() -> Vec<AccountId> {
 	use sp_core::crypto::AccountId32;
 	[
-		// Universidad de Montevideo — 5EFCYKc2KsTMDHecmpkaGFLaR6HWt1U2FJQTGuMtyqEDoeqj
-		hex_literal::hex!("60797a91d60bcfaa617fa5d899105da355125f33a81e9133fe54cf53cdb74a46"),
+		// Oxford University — 5CCfpGKyUT9wtTs6ZHadpNFCANDoW44hYymsn6WYySPix15D
+		hex_literal::hex!("061317540dfd28723a910082582508a1b662c1d0bfade9da4aeddd418dc95416"),
 		// UDELAR — 5FLXu2nKiGmP4wHX3qWt8eLE2g7ksFRyCk7vPZvcAg679TfC
 		hex_literal::hex!("90c719d8b3cd106b3d58f03a37f726d2a8f5e2d84b6b4575077950b591616062"),
+		// Universidad de Montevideo — 5EFCYKc2KsTMDHecmpkaGFLaR6HWt1U2FJQTGuMtyqEDoeqj
+		hex_literal::hex!("60797a91d60bcfaa617fa5d899105da355125f33a81e9133fe54cf53cdb74a46"),
 		// Universidad ORT — 5H9EGbs2A4CV97vRofjcfaRZTprzy17cR1BAnfM6Bd14sPtv
 		hex_literal::hex!("e0a086e694b2ab4445df8d61c0180bc881d948ad8a494468e0aec0e570b0780d"),
+		// Cambridge University — 5FxavHhN6KVzvGmXawry4E1S5rw3boJy8StoyotnmAJzxof9
+		hex_literal::hex!("ac461b7d8c679b849144e6dc34bc2c224f0baa5b146befdbae72e1b5b7f61a26"),
 	]
 	.into_iter()
 	.map(AccountId32::from)

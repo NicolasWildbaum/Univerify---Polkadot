@@ -1,14 +1,21 @@
 {
 	"_comment": "Template for the `polkadotTestnet` genesis config. Copy this file to genesis-testnet.json (gitignored) and fill it in before running `npm run deploy:univerify:testnet`. Each `account` must be the H160 that pallet-revive's AccountId32Mapper derives for the university's real Polkadot SS58 account (keccak256(pubkey)[-20:]). When the university signs from PWAllet / Polkadot.js, pallet-revive will present that exact H160 as msg.sender. The _ss58Mapping block is informational — it records which SS58 each H160 came from so deployments stay auditable. metadataHash should be the keccak256 of the institution's off-chain metadata document (DID doc, IPFS CID, etc.), or 0x00..00 if none. The approval threshold is computed on-chain as ceil(activeIssuerCount/2) and is not configured here.",
 	"_ss58Mapping": {
-		"University of Montevideo": "5EFCYKc2KsTMDHecmpkaGFLaR6HWt1U2FJQTGuMtyqEDoeqj",
+		"Oxford University": "5CCfpGKyUT9wtTs6ZHadpNFCANDoW44hYymsn6WYySPix15D",
 		"UDELAR": "5FLXu2nKiGmP4wHX3qWt8eLE2g7ksFRyCk7vPZvcAg679TfC",
-		"University ORT": "5H9EGbs2A4CV97vRofjcfaRZTprzy17cR1BAnfM6Bd14sPtv"
+		"University of Montevideo": "5EFCYKc2KsTMDHecmpkaGFLaR6HWt1U2FJQTGuMtyqEDoeqj",
+		"University ORT": "5H9EGbs2A4CV97vRofjcfaRZTprzy17cR1BAnfM6Bd14sPtv",
+		"Cambridge University": "5FxavHhN6KVzvGmXawry4E1S5rw3boJy8StoyotnmAJzxof9"
 	},
 	"issuers": [
 		{
 			"account": "0x5BD645Fa9828FE27330bD7a85BE54ae9CdC38EA5",
 			"name": "UDELAR",
+			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+		},
+		{
+			"account": "0x906c1cca9b5438a010403aaeae626ba993860fd2",
+			"name": "Oxford University",
 			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
 		},
 		{
@@ -19,6 +26,11 @@
 		{
 			"account": "0x01C6C7D0074820599EB32360584C5E261B29790B",
 			"name": "Universidad ORT",
+			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+		},
+		{
+			"account": "0xf21c8fa20682d4e76d88a39b08a65c7af1cb2133",
+			"name": "Cambridge University",
 			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
 		}
 	]

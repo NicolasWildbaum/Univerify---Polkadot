@@ -1,14 +1,21 @@
 {
-	"_comment": "Genesis config for the `local` Hardhat network. Loaded by scripts/deploy-univerify.ts. Each `account` is the H160 that `pallet-revive`'s AccountId32Mapper derives for the university's real Polkadot SS58 account (keccak256(pubkey)[-20:]). When the university signs a `Revive.call` extrinsic from PWAllet / Polkadot.js, pallet-revive presents exactly this H160 as msg.sender, so these are the three wallets that can issue and be governed by the contract. metadataHash=0x00..00 means no off-chain metadata; real deployments should use keccak256 of the institution's DID document or IPFS CID.",
+	"_comment": "Genesis config for the `local` Hardhat network. Loaded by scripts/deploy-univerify.ts. Each `account` is the H160 that `pallet-revive`'s AccountId32Mapper derives for the university's real Polkadot SS58 account (keccak256(pubkey)[-20:]). When the university signs a `Revive.call` extrinsic from PWAllet / Polkadot.js, pallet-revive presents exactly this H160 as msg.sender, so these are the wallets that can issue and be governed by the contract. metadataHash=0x00..00 means no off-chain metadata; real deployments should use keccak256 of the institution's DID document or IPFS CID.",
 	"_ss58Mapping": {
-		"University of Montevideo": "5EFCYKc2KsTMDHecmpkaGFLaR6HWt1U2FJQTGuMtyqEDoeqj",
+		"Oxford University": "5CCfpGKyUT9wtTs6ZHadpNFCANDoW44hYymsn6WYySPix15D",
 		"UDELAR": "5FLXu2nKiGmP4wHX3qWt8eLE2g7ksFRyCk7vPZvcAg679TfC",
-		"University ORT": "5H9EGbs2A4CV97vRofjcfaRZTprzy17cR1BAnfM6Bd14sPtv"
+		"University of Montevideo": "5EFCYKc2KsTMDHecmpkaGFLaR6HWt1U2FJQTGuMtyqEDoeqj",
+		"University ORT": "5H9EGbs2A4CV97vRofjcfaRZTprzy17cR1BAnfM6Bd14sPtv",
+		"Cambridge University": "5FxavHhN6KVzvGmXawry4E1S5rw3boJy8StoyotnmAJzxof9"
 	},
 	"issuers": [
 		{
 			"account": "0x5BD645Fa9828FE27330bD7a85BE54ae9CdC38EA5",
 			"name": "UDELAR",
+			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+		},
+		{
+			"account": "0x906c1cca9b5438a010403aaeae626ba993860fd2",
+			"name": "Oxford University",
 			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
 		},
 		{
@@ -19,6 +26,11 @@
 		{
 			"account": "0x01C6C7D0074820599EB32360584C5E261B29790B",
 			"name": "Universidad ORT",
+			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+		},
+		{
+			"account": "0xf21c8fa20682d4e76d88a39b08a65c7af1cb2133",
+			"name": "Cambridge University",
 			"metadataHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
 		}
 	]
